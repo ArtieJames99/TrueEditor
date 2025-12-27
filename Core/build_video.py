@@ -51,6 +51,7 @@ def build_video(
     music_volume=0.22,
     platform="instagram",
     voice_isolation_enabled=False,
+    captions_enabled=False,
 ):
     """
     Full TrueEdits video build pipeline:
@@ -67,7 +68,7 @@ def build_video(
     if not video_path.exists():
         raise FileNotFoundError(video_path)
 
-    edited_videos_dir = SCRIPT_DIR / ".." / "final" / "edited_videos"
+    edited_videos_dir = SCRIPT_DIR.parent / "final" / "edited_videos"
     edited_videos_dir.mkdir(parents=True, exist_ok=True)
 
     temp_captioned = edited_videos_dir / f"{video_path.stem}_captioned.mp4"
@@ -78,50 +79,63 @@ def build_video(
     # Generate captions
     # --------------------------------------------------
 
-    ass_path = SCRIPT_DIR / ".." / "final" / "transcriptions" / f"{video_path.stem}.ass"
+    ass_path = SCRIPT_DIR.parent / "final" / "transcriptions" / f"{video_path.stem}.ass"
     if not ass_path.exists():
-        log_message("INFO", "Generating captions...")
-        captioner.mp4_to_ass(video_path, model_name=model_name, language=language)
+        if captions_enabled:
+            log_message("INFO", "Generating captions...")
+            captioner.mp4_to_ass(video_path, model_name=model_name, language=language)
+        else:
+            log_message("INFO", "Captions disabled. - Skipping Generation")
 
     # Wait for ASS file
-    log_message("INFO", "Waiting for ASS file...")
-    max_wait = 500
-    elapsed = 0.0
-    while not ass_path.exists() and elapsed < max_wait:
-        time.sleep(0.5)
-        elapsed += 0.5
-    if not ass_path.exists():
-        raise FileNotFoundError(f"ASS file not created: {ass_path}")
+    if captions_enabled:
+        log_message("INFO", "Waiting for ASS file...")
+        max_wait = 500
+        elapsed = 0.0
+        while not ass_path.exists() and elapsed < max_wait:
+            time.sleep(0.5)
+            elapsed += 0.5
+        if not ass_path.exists():
+            raise FileNotFoundError(f"ASS file not created: {ass_path}")
+    else:
+        log_message("INFO", "Skipping caption file generation.")
 
     # --------------------------------------------------
     # Burn captions
     # --------------------------------------------------
+    timeline_input = temp_captioned
+    if captions_enabled:
+        try:
+            ass_relative = ass_path.relative_to(SCRIPT_DIR)
+        except ValueError:
+            ass_relative = ass_path
+        ass_filter = str(ass_relative).replace("\\", "/")
 
-    try:
-        ass_relative = ass_path.relative_to(SCRIPT_DIR)
-    except ValueError:
-        ass_relative = ass_path
-    ass_filter = str(ass_relative).replace("\\", "/")
+        cmd_burn = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-i",
+            str(video_path),
+            "-vf",
+            f"ass={ass_filter}",
+            "-map",
+            "0:v",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "copy",
+            str(temp_captioned),
+        ]
+        log_message("INFO", "Burning captions...")
+        subprocess.run(cmd_burn, check=True)
+    else:
+        # if captions are disabled just copy the original vieo to temp_captioned
+        log_message("INFO", "Captions disabled. - Skipping Burn")
+        import shutil
+        shutil.copy(video_path, temp_captioned)
 
-    cmd_burn = [
-        str(FFMPEG_EXE),
-        "-y",
-        "-i",
-        str(video_path),
-        "-vf",
-        f"ass={ass_filter}",
-        "-map",
-        "0:v",
-        "-map",
-        "0:a?",
-        "-c:v",
-        "libx264",
-        "-c:a",
-        "copy",
-        str(temp_captioned),
-    ]
-    log_message("INFO", "Burning captions...")
-    subprocess.run(cmd_burn, check=True)
 
     # --------------------------------------------------
     # Append end card
