@@ -1,5 +1,3 @@
-Absolutely! Here’s a fully Markdown-ready `README.md` with a **pipeline diagram** showing the processing flow, and a clear explanation of each stage for developers who want to understand or modify the workflow:
-
 # TrueEditor
 Auto Closed Captioning & End Card Editing for Short Form Content
 
@@ -107,14 +105,15 @@ Optional flags:
 python main.py "video.mp4" --model small --language Spanish --endcard English --music "assets\music\bg.mp4" --music-volume 0.3
 ```
 
-| Option            | Description                                                |
-| ----------------  | ---------------------------------------------------------- |
-| `--model`         | Whisper model (`tiny`, `base`, `small`, `medium`, `large`) |
-| `--language`      | Caption                                                    |
-| `--endcard`       | Optional end card video                                    |
-| `--music`         | Optional background music video or audio                   |
-| `--music-volume`  | Volume multiplier for added music (0.0–1.0 recommended)    |
-| `--voice-isolation| Isloates the Vocals and removes background wind            |
+| Option              | Description                                                |
+| ------------------- | ---------------------------------------------------------- |
+| `--captions`        | Enables Closed Captions                                    |
+| `--model`           | Whisper model (`tiny`, `base`, `small`, `medium`, `large`) |
+| `--language`        | Caption language (audo disables auto detection             |
+| `--endcard`         | Optional end card video                                    |
+| `--music`           | Optional background music video or audio                   |
+| `--music-volume`    | Volume multiplier for added music (0.0–1.0 recommended)    |
+| `--voice-isolation` | Isloates the Vocals and removes background wind            |
 
 ---
 
