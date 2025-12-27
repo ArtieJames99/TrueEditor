@@ -1,0 +1,5 @@
+torch>=2.1.0
+whisper>=20231004
+ffmpeg-python>=0.2.0
+numpy>=1.25.0
+scipy>=1.12.0
