@@ -1,5 +1,5 @@
 # TrueEditor
-Auto Closed Captioning & End Card Editing for Short Form Content
+Auto Closed Captioning & Brand Editing for Short Form Content
 
 TrueEditor is a Windows-first Python tool that automatically **generates, styles, and burns closed captions** into videos using OpenAI Whisper and FFmpeg. It is designed specifically for **vertical (9:16) social media videos** and avoids common platform UI cutoffs on Instagram, Facebook, and similar platforms.
 
