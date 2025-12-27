@@ -1,5 +1,7 @@
+Absolutely! Here’s a fully Markdown-ready `README.md` with a **pipeline diagram** showing the processing flow, and a clear explanation of each stage for developers who want to understand or modify the workflow:
+
 # TrueEditor
-Auto Closed Captioning &amp; end card editing for short form content
+Auto Closed Captioning & End Card Editing for Short Form Content
 
 TrueEditor is a Windows-first Python tool that automatically **generates, styles, and burns closed captions** into videos using OpenAI Whisper and FFmpeg. It is designed specifically for **vertical (9:16) social media videos** and avoids common platform UI cutoffs on Instagram, Facebook, and similar platforms.
 
@@ -10,6 +12,9 @@ This project supports:
 * Multiple Whisper model sizes
 * Language-aware captioning (English / Spanish)
 * Caption-safe placement (≈1/3 up from bottom)
+* Optional **end card insertion**
+* Optional **background music addition**
+* Automatic handling of rotated or vertical phone footage
 
 ---
 
@@ -21,26 +26,28 @@ This project supports:
 * 🧠 Handles rotated phone footage correctly
 * 📂 Batch processing of folders
 * 🌎 Language selection (English / Spanish)
+* 🎵 Optional music addition with volume control
 * 🪟 Windows-safe paths and execution
+* ⚡ Fast processing with configurable Whisper model sizes (`tiny`, `base`, `small`, `medium`, `large`)
 
 ---
 
 ## Project Structure
-
 ```
 True/
 ├── main.py                 # Entry point (single or batch mode)
-├── build_video.py          # Handles caption burn + end card
+├── build_video.py          # Handles caption burn + end card + optional music
 ├── autocaptioner.py        # Generates ASS captions using Whisper
 ├── assets/
 │   └── ffmpeg/
 │       └── ffmpeg.exe
 ├── transcriptions/         # Generated .ass subtitle files
 ├── video_files/            # Input videos
+├── final/                  # Output videos and temporary files
+│   └── temp_audio/         # Temporary audio files for processing
 ├── .venv/                  # Python virtual environment
 └── README.md
 ```
-
 ---
 
 ## Requirements
@@ -58,7 +65,10 @@ whisper
 ffmpeg-python
 numpy
 torch
-```
+scipy
+DeepFilterNet
+
+````
 
 > ⚠️ Whisper requires PyTorch. First run may take longer due to model download.
 
@@ -71,7 +81,7 @@ torch
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
+````
 
 ### 2. Install dependencies
 
@@ -79,7 +89,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-(or install manually if no requirements.txt yet)
+(or install manually if no `requirements.txt` yet)
 
 ---
 
@@ -94,14 +104,17 @@ python main.py "video_files\example.mp4"
 Optional flags:
 
 ```powershell
-python main.py "video.mp4" --model small --language Spanish
+python main.py "video.mp4" --model small --language Spanish --endcard English --music "assets\music\bg.mp4" --music-volume 0.3
 ```
 
-| Option       | Description                                                |
-| ------------ | ---------------------------------------------------------- |
-| `--model`    | Whisper model (`tiny`, `base`, `small`, `medium`, `large`) |
-| `--language` | Caption language (English / Spanish)                       |
-| `--endcard`  | Optional end card video                                    |
+| Option            | Description                                                |
+| ----------------  | ---------------------------------------------------------- |
+| `--model`         | Whisper model (`tiny`, `base`, `small`, `medium`, `large`) |
+| `--language`      | Caption                                                    |
+| `--endcard`       | Optional end card video                                    |
+| `--music`         | Optional background music video or audio                   |
+| `--music-volume`  | Volume multiplier for added music (0.0–1.0 recommended)    |
+| `--voice-isolation| Isloates the Vocals and removes background wind            |
 
 ---
 
@@ -114,12 +127,67 @@ python main.py "video_files"
 * Processes all `.mp4` files in the folder
 * Skips files already marked `_Edited`
 * Outputs burned videos next to originals
+* Handles optional end card and music for each video
+
+---
+
+## TrueEditor Pipeline
+
+Below is the **processing pipeline**, showing the sequence of events for a single video:
+
+```
+Input Video (.mp4)
+       │
+       ▼
+[Audio Extraction]
+   - FFmpeg separates audio from video
+       │
+       ▼
+[Speech-to-Text]
+   - Whisper transcribes audio
+   - Generates timestamps for captions
+       │
+       ▼
+[ASS Caption Generation]
+   - autocaptioner.py creates styled .ass file
+   - Ensures bottom-centered, safe placement
+       │
+       ▼
+[Optional Audio Processing]
+   - Mix in background music
+   - Adjust volume
+       │
+       ▼
+[Video Burn-in]
+   - FFmpeg burns captions onto video
+   - Handles rotation metadata correctly
+       │
+       ▼
+[Optional End Card Insertion]
+   - Appends end card video if specified
+       │
+       ▼
+Final Output Video (_burned.mp4)
+       │
+       ▼
+[Temporary Cleanup]
+   - Removes temp audio files
+   - Leaves transcriptions intact
+```
+
+### Notes on Pipeline
+
+1. **Order matters:** Captions must be generated before burn-in.
+2. **Audio is copied** unless music is added.
+3. **Rotation-safe:** Videos filmed in portrait or landscape are handled correctly.
+4. **Batch mode:** The same pipeline is applied iteratively to each `.mp4` file.
 
 ---
 
 ## Caption Placement (Important)
+> Note: In future edits of this Progam there will be a GUI that adds in editing of the location, Size and Positioning of captions
 
-TrueCaptions uses **ASS subtitle styling** to ensure captions are:
+TrueEditor uses **ASS subtitle styling** to ensure captions are:
 
 * Bottom-centered
 * Raised to ~**1/3 up the screen**
@@ -151,7 +219,7 @@ MarginV: 640   # ~1/3 of 1920
 * Caption files: `transcriptions/<video_name>.ass`
 * Final video: `<video_name>_burned.mp4`
 
-Audio is copied directly (no re-encode).
+Audio is copied directly (no re-encode). Background music, if added, is mixed at specified volume.
 
 ---
 
@@ -176,6 +244,8 @@ Audio is copied directly (no re-encode).
 * [ ] Per-platform caption profiles
 * [ ] GPU Whisper support
 * [ ] GUI frontend
+* [ ] Enhanced audio handling (noise reduction, wind removal)
+* [ ] Automatic end card templating
 
 ---
 
@@ -193,6 +263,4 @@ Copyright (c) 2025 AJ F. Jex
 * FFmpeg
 * libass subtitle engine
 
----
-
-Built for fast, reliable social video cap
+Built for fast, reliable social video captioning, end card branding, and automatic audio integration
