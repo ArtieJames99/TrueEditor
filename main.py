@@ -43,6 +43,7 @@ def process_folder(folder_path, args):
                 music_path=Path(args.music) if args.music else None,
                 music_volume=args.music_volume,
                 voice_isolation_enabled=args.voice_isolation,
+                captions_enabled=args.captions
             )
         except Exception as e:
             print(f"[ERROR] Failed processing {video.name}")
@@ -59,6 +60,13 @@ def main():
     parser.add_argument(
         "input",
         help="Path to a video file OR a folder of videos"
+    )
+
+    # ---- CAPTIONS OPTIONS ----
+    parser.add_argument(
+        "--captions",
+        action="store_true",
+        help="Enable captions burning"
     )
 
     # ---- VIDEO OPTIONS ----
@@ -138,6 +146,7 @@ def main():
             music_path=Path(args.music) if args.music else None,
             music_volume=args.music_volume,
             voice_isolation_enabled=args.voice_isolation,
+            captions_enabled=args.captions,
         )
 
 if __name__ == "__main__":
