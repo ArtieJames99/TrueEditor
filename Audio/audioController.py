@@ -6,6 +6,7 @@ import os
 
 SCRIPT_DIR = Path(__file__).parent
 FFMPEG_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffmpeg.exe"
+FFPROBE_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffprobe.exe"
 
 if FFMPEG_EXE.exists():
     os.environ["PATH"] = str(FFMPEG_EXE.parent) + os.pathsep + os.environ.get("PATH", "")
@@ -17,6 +18,26 @@ LOUDNESS_TARGETS = {
     "tiktok":    {"i": -14, "tp": -1.0, "lra": 11},
     "podcast":   {"i": -16, "tp": -1.5, "lra": 9},
 }
+
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
+
+# Tracks audio delay
+def get_audio_delay(video_path):
+    cmd = [
+        str(FFPROBE_EXE),
+        "-v", "error",
+        "-select_streams", "a:0",
+        "-show_entries", "stream=start_time",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path)
+    ]
+    result = subprocess.check_output(cmd, text=True).strip()
+    try:
+        return float(result)
+    except:
+        return 0.0
 
 def log_message(level, msg):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -41,6 +62,9 @@ def process_audio(
     """
 
     video_in = Path(video_in).resolve()
+    audio_delay = get_audio_delay(video_in)
+    delay_ms = int(audio_delay * 1000)
+    log_message("INFO", f"Applying audio delay of {audio_delay} seconds ({delay_ms} ms)")
     video_out = Path(video_out).resolve()
 
     if not video_in.exists():
@@ -80,6 +104,7 @@ def process_audio(
     if cleanup_level == "full":
         voice_chain = (
             f"[{voice_index}:a]"
+            f"adelay={delay_ms}|{delay_ms},"
             "highpass=80,"
             "lowpass=12000,"
             "afftdn,"
@@ -91,6 +116,7 @@ def process_audio(
     elif cleanup_level == "light":
         voice_chain = (
             f"[{voice_index}:a]"
+            f"adelay={delay_ms}|{delay_ms},"
             "highpass=80,"
             "lowpass=12000,"
             "aresample=48000,"
@@ -100,6 +126,7 @@ def process_audio(
     else:
         voice_chain = (
             f"[{voice_index}:a]"
+            f"adelay={delay_ms}|{delay_ms},"
             "anull,"
             "aresample=48000,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo"
