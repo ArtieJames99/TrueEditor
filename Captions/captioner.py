@@ -9,12 +9,14 @@ import shutil
 import subprocess
 from pathlib import Path
 from datetime import datetime
+import json
 
 # === Configuration ===
 
 # Use bundled FFmpeg from assets folder
 SCRIPT_DIR = Path(__file__).parent
 FFMPEG_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffmpeg.exe"
+FFPROBE_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffprobe.exe"
 
 # Ensure FFmpeg is on PATH for Whisper & subprocesses
 ffmpeg_folder = str(FFMPEG_EXE.parent.resolve())
@@ -42,7 +44,6 @@ def log_message(level, msg):
     print(f"[{timestamp}] [{level}] {msg}")
 
 # === Helper Functions ===
-# captioner.py
 def transcribe_video(video_path, model_name="small", language=None):
     import whisper
 
@@ -140,6 +141,36 @@ def build_caption_segments(result, max_chars=20):
 
     return output
 
+# Sets the video resolution for captions to handle the exact video size
+def get_video_resolution(video_path):
+    if not FFPROBE_EXE.exists():
+        log_message("WARNING", f"FFprobe not found at {FFPROBE_EXE}, cannot get video resolution.")
+        return 1920, 1080  # default fallback
+    cmd = [
+        str(FFPROBE_EXE),
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,side_data_list",
+        "-of", "json",
+        str(video_path)
+    ]
+
+    result = subprocess.check_output(cmd, text=True)
+    data = json.loads(result)
+
+    stream = data["streams"][0]
+    width = stream["width"]
+    height = stream["height"]
+
+    # Detect rotation (mobile videos)
+    for side in stream.get("side_data_list", []):
+        if side.get("side_data_type") == "Display Matrix":
+            rotation = int(side.get("rotation", 0))
+            if abs(rotation) in (90, 270):
+                width, height = height, width
+
+    return width, height
+
 
 def ass_time(sec):
     cs = int(round(sec*100))
@@ -154,22 +185,33 @@ def ass_time(sec):
 def ass_escape(text):
     return text.replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n","\\N")
 
-def save_ass(segments, out_path):
+def save_ass(segments, out_path, video_path):
     # create directory for output path; if no dirname, use current dir
     out_dir = os.path.dirname(out_path) or "."
     os.makedirs(out_dir, exist_ok=True)
-    lines = ["[Script Info]",
-             "ScriptType: v4.00+",
-             "PlayResX: 1920",
-             "PlayResY: 1080",
-             "ScaledBorderAndShadow: yes",
-             "WrapStyle: 2","",
-             "[V4+ Styles]",
-             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,"
-             " Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle,"
-             " BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-             "Style: Default,Arial,58,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,1,2,80,80,420,1","",             "[Events]",
-             "Format: Layer, Start, End, Style,S Name, MarginL, MarginR, MarginV, Effect, Text"]
+    w, h = get_video_resolution(video_path)
+    margin_v = int(h * 0.33)   # ~33% of height
+    margin_lr = int(w * 0.075) # ~3.7% of width
+    fontsize = int(h * 0.072)
+    spacing = int(w * 0.0005)  
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1920",
+        "PlayResY: 1080",
+        "ScaledBorderAndShadow: yes",
+        "WrapStyle: 0",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,"
+        " Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle,"
+        " BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,Roboto,78,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
+        f"0,0,0,0,105,100,1,0,1,3,2,2,{margin_lr},{margin_lr},{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+    ]
     for seg in segments:   
         start = ass_time(seg["start"])
         end = ass_time(seg["end"])
@@ -201,6 +243,7 @@ def wrap_ass_text_max_2_lines(text, max_chars):
         lines.append(current)
 
     return r"\N".join(lines)
+
 
 
 # Public API: transcribe MP4 and save ASS captions
@@ -245,7 +288,7 @@ def mp4_to_ass(video_path, model_name="small", language=None):
     
     log_message("INFO", "Saving ASS file...")
     ass_path = os.path.join(TRANSCRIPTIONS_DIR, f"{video_path.stem}.ass")
-    save_ass(segments, ass_path)
+    save_ass(segments, ass_path, video_path)
     log_message("INFO", f"=== Transcription complete: {ass_path} ===")
     return ass_path
 
@@ -260,7 +303,8 @@ def main(video_path, language=None):
 
     # Merge captions into en.mov (CLI convenience)
     out_mov = video_path.parent / "en.mov"
-    cmd = [FFMPEG_EXE, "-i", str(video_path), "-vf", f"ass={ass_path}", str(out_mov)]
+    ass_path_ffmpeg = ass_path.replace("\\", "/")
+    cmd = [FFMPEG_EXE, "-i", str(video_path), "-vf", f"ass='{ass_path_ffmpeg}'", str(out_mov)]
     subprocess.run(cmd, check=True)
     print(f"Video with captions saved to: {out_mov}")
 
