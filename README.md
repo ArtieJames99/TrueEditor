@@ -98,11 +98,22 @@ pip install -r requirements.txt
 ```powershell
 python main.py "video_files\example.mp4"
 ```
+### 📂 Multi Video (Batch Editing)
+
+```powershell
+python main.py "path/to/folder"
+```
+
+* Processes all `.mp4` files in the folder
+* Skips files already marked `_Edited`
+* Outputs burned videos next to originals
+* Handles optional end card and music for each video
+
 
 Optional flags:
 
 ```powershell
-python main.py "video.mp4" --model small --language Spanish --endcard English --music "assets\music\bg.mp4" --music-volume 0.3
+python main.py "video.mp4" --captions --model small --language Spanish --endcard English --music "assets\music\bg.mp4" --music-volume 0.3
 ```
 
 | Option              | Description                                                |
@@ -117,18 +128,6 @@ python main.py "video.mp4" --model small --language Spanish --endcard English --
 
 ---
 
-### 📂 Batch Folder Processing
-
-```powershell
-python main.py "video_files"
-```
-
-* Processes all `.mp4` files in the folder
-* Skips files already marked `_Edited`
-* Outputs burned videos next to originals
-* Handles optional end card and music for each video
-
----
 
 ## TrueEditor Pipeline
 
