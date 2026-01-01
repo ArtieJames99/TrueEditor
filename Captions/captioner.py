@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from .ass_style import AssStyle
 import json
 
 # === Configuration ===
@@ -185,41 +186,57 @@ def ass_time(sec):
 def ass_escape(text):
     return text.replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n","\\N")
 
-def save_ass(segments, out_path, video_path):
-    # create directory for output path; if no dirname, use current dir
+def save_ass(segments, out_path, video_path, style: AssStyle | None = None):
+    """
+    Save caption segments to an ASS file.
+    Styling is handled by AssStyle (GUI-editable).
+    """
     out_dir = os.path.dirname(out_path) or "."
     os.makedirs(out_dir, exist_ok=True)
-    w, h = get_video_resolution(video_path)
-    margin_v = int(h * 0.33)   # ~33% of height
-    margin_lr = int(w * 0.075) # ~3.7% of width
-    fontsize = int(h * 0.072)
-    spacing = int(w * 0.0005)  
-    lines = [
-        "[Script Info]",
-        "ScriptType: v4.00+",
-        "PlayResX: 1920",
-        "PlayResY: 1080",
-        "ScaledBorderAndShadow: yes",
-        "WrapStyle: 0",
-        "",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,"
-        " Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle,"
-        " BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,Roboto,78,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
-        f"0,0,0,0,105,100,1,0,1,3,2,2,{margin_lr},{margin_lr},{margin_v},1",
+
+    video_w, video_h = get_video_resolution(video_path)
+
+    if style is None:
+        style = AssStyle.default_for_video(
+            width=video_w,
+            height=video_h
+        )
+        style.play_res_x = video_w
+        style.play_res_y = video_h
+
+
+    # Load video resolution
+    video_w, video_h = get_video_resolution(video_path)
+
+    # Create default style if none provided
+    if style is None:
+        style = AssStyle.default_for_video(
+            width=video_w,
+            height=video_h
+        )
+
+    # Build ASS header from style object
+    lines = style.build_header()
+
+    # Events section
+    lines += [
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     ]
-    for seg in segments:   
+
+    for seg in segments:
         start = ass_time(seg["start"])
         end = ass_time(seg["end"])
         text = ass_escape(seg["text"])
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
-    with open(out_path,"w",encoding="utf-8") as f:
+        lines.append(
+            f"Dialogue: 0,{start},{end},{style.name},,0,0,0,,{text}"
+        )
+
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"ASS saved to: {out_path}")
+
+    log_message("INFO", f"ASS saved to: {out_path}")
     return out_path
 
 def wrap_ass_text_max_2_lines(text, max_chars):
@@ -247,7 +264,7 @@ def wrap_ass_text_max_2_lines(text, max_chars):
 
 
 # Public API: transcribe MP4 and save ASS captions
-def mp4_to_ass(video_path, model_name="small", language=None):
+def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None):
     """Transcribe a video file and write an .ass captions file.
     Returns the path to the generated .ass file.
     """
@@ -288,7 +305,7 @@ def mp4_to_ass(video_path, model_name="small", language=None):
     
     log_message("INFO", "Saving ASS file...")
     ass_path = os.path.join(TRANSCRIPTIONS_DIR, f"{video_path.stem}.ass")
-    save_ass(segments, ass_path, video_path)
+    save_ass(segments, ass_path, video_path, style=style)
     log_message("INFO", f"=== Transcription complete: {ass_path} ===")
     return ass_path
 
