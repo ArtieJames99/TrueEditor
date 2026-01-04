@@ -124,7 +124,7 @@ def build_video(
         ass_path_fixed = ass_path.as_posix().replace(":", r"\:")
         ass_filter = f"subtitles='{ass_path_fixed}:original_size={playresx}x{playresy}'"
 
-        # Optional: read PlayResX/Y from ASS
+        # read PlayResX/Y from ASS 
         try:
             with open(ass_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -162,7 +162,7 @@ def build_video(
             log_message("ERROR", "FFmpeg failed to burn captions.")
             log_message("ERROR", str(e))
     else:
-        # Captions disabled → just copy the original video
+        # If Captions disabled → just copy the original video
         log_message("INFO", "Captions disabled. - Skipping Burn")
         import shutil
         shutil.copy(video_path, temp_captioned)
@@ -205,7 +205,7 @@ def build_video(
         audio_source = None
         is_isolated = False
 
-        # 1. Voice isolation
+        # Voice isolation
         if voice_isolation_enabled:
             log_message("INFO", f"Running voice isolation on {temp_timeline.name}...")
             processed_audio = process_voice_isolation(temp_timeline, TEMP_DIR)
@@ -217,25 +217,25 @@ def build_video(
             else:
                 log_message("WARN", "Voice isolation failed, using raw audio.")
 
-        # 2. Extract raw audio if needed
+        # Extract raw audio if needed
         if not audio_source:
             raw_audio = TEMP_DIR / f"{temp_timeline.stem}_raw.wav"
             log_message("INFO", "Extracting raw timeline audio...")
             extract_audio(temp_timeline, raw_audio)
             audio_source = raw_audio
 
-        # 3. Normalize
+        # Normalize
         log_message("INFO", "Normalizing audio loudness (LUFS)...")
         norm_audio_tmp = TEMP_DIR / f"{temp_timeline.stem}_norm.wav"
         normalize_audio(audio_source, norm_audio_tmp)
         audio_source = norm_audio_tmp
 
-        # 4. Cleanup level adjustments
+        # Cleanup level adjustments
         if is_isolated:
             log_message("INFO", "Reducing cleanup level due to voice isolation.")
             cleanup_level = "light"
 
-        # 5. Final audio processing
+        # Final audio processing
         process_audio(
             video_in=temp_timeline,
             video_out=final_output,
@@ -249,7 +249,6 @@ def build_video(
     else:
         # No audio features → skip audio processing entirely
         log_message("INFO", "Skipping audio processing (no audio features enabled).")
-        # Just copy the timeline video to final output
         import shutil
         shutil.copy(temp_timeline, final_output)
 
@@ -293,7 +292,7 @@ def concat_videos(video1_path, video2_path, output_path):
 
     log_message("INFO", "Preparing end card for concat...")
 
-    # 1. Ensure end card has audio
+    # Ensure end card has audio
     endcard_with_audio = video2_path.parent / "endcard_with_audio.mp4"
     cmd_add_audio = [
         str(FFMPEG_EXE), "-y",
@@ -306,7 +305,7 @@ def concat_videos(video1_path, video2_path, output_path):
     ]
     subprocess.run(cmd_add_audio, check=True)
 
-    # 2. Scale end card to match main video resolution
+    # Scale end card to match main video resolution
     scaled_endcard = video2_path.parent / "endcard_scaled.mp4"
     cmd_scale = [
         str(FFMPEG_EXE), "-y",
@@ -318,7 +317,7 @@ def concat_videos(video1_path, video2_path, output_path):
     ]
     subprocess.run(cmd_scale, check=True)
 
-    # 3. Concat timeline
+    # Concat timeline
     cmd_concat = [
         str(FFMPEG_EXE), "-y",
         "-i", str(video1_path),
@@ -336,5 +335,6 @@ def concat_videos(video1_path, video2_path, output_path):
     video1_path.unlink(missing_ok=True)
     endcard_with_audio.unlink(missing_ok=True)
     scaled_endcard.unlink(missing_ok=True)
+
 
     log_message("INFO", f"Saved timeline video: {output_path}")
