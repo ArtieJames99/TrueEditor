@@ -147,7 +147,7 @@ def process_audio(
         )
 
         # Sidechain ducking (music ducks under voice)
-        # Use a practical threshold; 0.15 ≈ -16.5 dBFS
+        # practical threshold; 0.15 ≈ -16.5 dBFS
         filters.append(
             "[music][voice]"
             "sidechaincompress="
@@ -192,9 +192,9 @@ def process_audio(
         "-ar", "48000",
         "-ac", "2",
         "-movflags", "+faststart",
-        # Intentionally omit -shortest; rely on length-conformed isolated audio
         str(video_out)
     ]
 
     log_message("DEBUG", " ".join(cmd))
+
     subprocess.run(cmd, check=True)
