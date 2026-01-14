@@ -1,8 +1,9 @@
+> [!IMPORTANT]
+> Copyright (c) 2026 KLJ Enterprises, LLC.
+> Licensed under the terms in the LICENSE file in the root of this repository.
+
 # TrueEditor
 Auto Closed Captioning & Brand Editing for Short Form Content
-
-> [!warning]
-> Latest Update Requres ffprobe.exe as well as ffmpeg. please see assets/ffmepeg/README.md for more information
 
 TrueEditor is a Windows-first Python tool that automatically **generates, styles, and burns closed captions** into videos using OpenAI-Whisper and FFmpeg. It is designed specifically for **vertical (9:16) social media videos** and avoids common platform UI cutoffs on Instagram, Facebook, and similar platforms.
 
@@ -252,9 +253,8 @@ Audio is copied directly (no re-encode). Background music, if added, is mixed at
 
 ## License
 
-MIT License
-
-Copyright (c) 2025 AJ F. Jex
+Copyright (c) 2026 KLJ Enterprises, LLC.
+Licensed under the terms in the LICENSE file in the root of this repository.
 
 ---
 
