@@ -2,6 +2,17 @@
 > Copyright (c) 2026 KLJ Enterprises, LLC.
 > Licensed under the terms in the LICENSE file in the root of this repository.
 
+### Using the UI
+to use the UI, you must call
+```
+python .\ui\TrueEditor-UI.py
+```
+Calling
+```
+python .\main.py
+```
+Will use the termnal mode
+
 # TrueEditor
 Auto Closed Captioning & Brand Editing for Short Form Content
 
