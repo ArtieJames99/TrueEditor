@@ -121,6 +121,7 @@ def main():
         action="store_true",
         help="Enable DeepFilterNet voice Isolation"
 )
+    
 
     args = parser.parse_args()
     input_path = Path(args.input)

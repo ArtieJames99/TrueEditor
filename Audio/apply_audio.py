@@ -20,6 +20,7 @@ def apply_audio(
     video_out = Path(video_out)
 
     if not enable_audio:
+        # Fastest possible path (no re-encode)
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_in),
@@ -43,7 +44,7 @@ def apply_audio(
 
     cmd = ["ffmpeg", "-y", "-i", str(video_in)]
 
-    # Optional background music (call by --music "path/to/music")
+    # Optional background music
     if music_path:
         cmd += ["-i", str(music_path)]
         cmd += [
@@ -61,6 +62,5 @@ def apply_audio(
         "-b:a", "192k",
         str(video_out)
     ]
-
 
     subprocess.run(cmd, check=True)

@@ -1,7 +1,7 @@
-"""
-AutoCaptions Single-File Runner
-Generates .ASS captions for a video and outputs en.mp4
-"""
+'''
+Copyright (c) 2026 KLJ Enterprises, LLC.
+Licensed under the terms in the LICENSE file in the root of this repository.
+'''
 
 import os
 import sys
@@ -30,11 +30,18 @@ if not FFMPEG_EXE.exists():
 # Import Whisper after setting PATH
 import whisper
 
-# Max characters per caption
+# Max characters per caption  - Add in a way to select what kind of Captions you want (Single word, line mode, Noraml estimates)
+def max_chars_for_width(width: int) -> int:
+    """
+    Estimate max readable characters per line based on video width.
+    Assumes ~0.55em average glyph width.
+    """
+    return max(12, int((width * 0.75) / 30))
+
 try:
-    MAX_CHARS = int(os.environ.get('AUTOCAPTIONS_MAXCHARS', '20'))
+    MAX_CHARS = int(os.environ.get('AUTOCAPTIONS_MAXCHARS', '15'))
 except Exception:
-    MAX_CHARS = 20
+    MAX_CHARS = 15
 
 TRANSCRIPTIONS_DIR = SCRIPT_DIR / ".." / "final" / "transcriptions"
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
@@ -144,34 +151,56 @@ def build_caption_segments(result, max_chars=20):
 
 # Sets the video resolution for captions to handle the exact video size
 def get_video_resolution(video_path):
+    """
+    Returns the DISPLAY resolution of the video (post-rotation).
+    This is the resolution ASS must use.
+    """
     if not FFPROBE_EXE.exists():
-        log_message("WARNING", f"FFprobe not found at {FFPROBE_EXE}, cannot get video resolution.")
-        return 1920, 1080  # default fallback
+        log_message("WARNING", "FFprobe missing — using fallback resolution")
+        return 1920, 1080
+
     cmd = [
         str(FFPROBE_EXE),
         "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,side_data_list",
+        "-show_entries",
+        "stream=width,height,side_data_list:stream_tags=rotate",
         "-of", "json",
         str(video_path)
     ]
 
-    result = subprocess.check_output(cmd, text=True)
-    data = json.loads(result)
-
+    data = json.loads(subprocess.check_output(cmd, text=True))
     stream = data["streams"][0]
-    width = stream["width"]
-    height = stream["height"]
 
-    # Detect rotation (mobile videos)
+    width = int(stream["width"])
+    height = int(stream["height"])
+
+    rotation = 0
+
+    # 1️⃣ Primary source: stream tag
+    tags = stream.get("tags", {})
+    if "rotate" in tags:
+        rotation = int(tags["rotate"])
+
+    # 2️⃣ Fallback: display matrix
     for side in stream.get("side_data_list", []):
         if side.get("side_data_type") == "Display Matrix":
-            rotation = int(side.get("rotation", 0))
-            if abs(rotation) in (90, 270):
-                width, height = height, width
+            rotation = int(side.get("rotation", rotation))
+
+    # 3️⃣ Normalize to display orientation
+    if rotation in (90, 270, -90):
+        width, height = height, width
+
+    # 4️⃣ Enforce vertical sanity (optional but recommended)
+    if height < width:
+        width, height = height, width
+
+    log_message(
+        "DEBUG",
+        f"Video geometry: display={width}x{height}, rotation={rotation}"
+    )
 
     return width, height
-
 
 def ass_time(sec):
     cs = int(round(sec*100))
@@ -186,34 +215,50 @@ def ass_time(sec):
 def ass_escape(text):
     return text.replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n","\\N")
 
-def save_ass(segments, out_path, video_path, style: AssStyle | None = None):
+def save_ass(segments, out_path, video_path, style: AssStyle | None = None, position: dict | None = None):
     """
     Save caption segments to an ASS file.
     Styling is handled by AssStyle (GUI-editable).
+    If `position` is provided (dict with 'x' and 'y' normalized 0..1),
+    a per-dialogue ASS override `{\pos(px,py)}` will be prepended to each line
+    to enforce exact pixel placement in PlayRes coordinates.
     """
     out_dir = os.path.dirname(out_path) or "."
     os.makedirs(out_dir, exist_ok=True)
 
+    # Determine video resolution and ensure style exists
     video_w, video_h = get_video_resolution(video_path)
 
     if style is None:
-        style = AssStyle.default_for_video(
-            width=video_w,
-            height=video_h
-        )
-        style.play_res_x = video_w
-        style.play_res_y = video_h
+        # Create an adaptive style sized for this video
+        style = AssStyle.adaptive_for_video(video_w, video_h)
 
+    # If the provided style was created for a different PlayRes, scale (existing logic)
+    try:
+        orig_w = int(style.play_res_x or 1920)
+        orig_h = int(style.play_res_y or 1080)
+    except Exception:
+        orig_w, orig_h = 1920, 1080
 
-    # Load video resolution
-    video_w, video_h = get_video_resolution(video_path)
+    if orig_w > 0 and orig_h > 0:
+        scale_x = video_w / orig_w
+        scale_y = video_h / orig_h
 
-    # Create default style if none provided
-    if style is None:
-        style = AssStyle.default_for_video(
-            width=video_w,
-            height=video_h
-        )
+        new_font = max(8, int(style.font_size * scale_y))
+        style.spacing = int(style.spacing * min(scale_x, scale_y))
+        max_font = max(8, int(video_h * 0.2))
+        style.font_size = min(new_font, max_font)
+
+        style.margin_l = max(0, int(style.margin_l * scale_x))
+        style.margin_r = max(0, int(style.margin_r * scale_x))
+        style.margin_v = max(0, int(style.margin_v * scale_y))
+        style.outline = max(0, int(style.outline * max(scale_x, scale_y)))
+        style.shadow = max(0, int(style.shadow * max(scale_x, scale_y)))
+
+    # Ensure header PlayRes matches the actual video resolution and clamp margins
+    style.play_res_x = video_w
+    style.play_res_y = video_h
+    style.clamp_margins(video_w, video_h)
 
     # Build ASS header from style object
     lines = style.build_header()
@@ -225,12 +270,35 @@ def save_ass(segments, out_path, video_path, style: AssStyle | None = None):
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     ]
 
+    # If position provided, precompute pixel coords from normalized values
+    pos_px = pos_py = None
+    if position:
+        x_norm = float(position.get('x', 0.5))
+        y_norm = float(position.get('y', 0.75))
+        # Convert normalized center (0..1) to PlayRes pixels
+        pos_px = int(round(x_norm * video_w))
+        pos_py = int(round(y_norm * video_h))
+
     for seg in segments:
         start = ass_time(seg["start"])
         end = ass_time(seg["end"])
-        text = ass_escape(seg["text"])
+
+        # Escape the dialogue text (this will not escape our manual {\pos(...)} tag)
+        escaped_text = ass_escape(seg["text"])
+
+        # If position provided, prepend an override block with exact pixel position.
+        # This overrides style margins/alignment for this line and places the
+        # text origin according to the style's alignment (`\an`), which will
+        # usually be center (5) or the style default. Using \pos gives precise control.
+        if pos_px is not None and pos_py is not None:
+            # UI provides the caption center point; ensure ASS uses center anchor
+            # `\an5` forces the origin to the text center so \pos(x,y) maps to UI coords
+            text = f"{{\\an5\\pos({pos_px},{pos_py})}}{escaped_text}"
+        else:
+            text = escaped_text
+
         lines.append(
-            f"Dialogue: 0,{start},{end},{style.name},,0,0,0,,{text}"
+            f"Dialogue: 0,{start},{end},{style.name},,{int(style.margin_l)},{int(style.margin_r)},{int(style.margin_v)},,{text}"
         )
 
     with open(out_path, "w", encoding="utf-8") as f:
@@ -261,10 +329,63 @@ def wrap_ass_text_max_2_lines(text, max_chars):
 
     return r"\N".join(lines)
 
+def format_captions_by_mode(captions: list, mode: str) -> list:
+    """Format captions based on selected length mode."""
+    
+    if mode == 'single_word':
+        # Split each caption into individual words
+        result = []
+        for caption in captions:
+            words = caption['text'].split()
+            for word in words:
+                result.append({
+                    'start': caption['start'],
+                    'end': caption['end'],
+                    'text': word.strip()
+                })
+        return result
+    
+    elif mode == 'movie':
+        # Combine captions into longer blocks (2-3 sentences)
+        result = []
+        current_block = []
+        current_text = ""
+        
+        for caption in captions:
+            if len(current_block) < 3 and len(current_text + " " + caption['text']) < 120:
+                current_block.append(caption)
+                current_text += " " + caption['text']
+            else:
+                if current_block:
+                    result.append({
+                        'start': current_block[0]['start'],
+                        'end': current_block[-1]['end'],
+                        'text': current_text.strip()
+                    })
+                current_block = [caption]
+                current_text = caption['text']
+        
+        # Add remaining block
+        if current_block:
+            result.append({
+                'start': current_block[0]['start'],
+                'end': current_block[-1]['end'],
+                'text': current_text.strip()
+            })
+        
+        return result
+    
+    else:  # line mode (default)
+        # Return captions as-is, just clean up formatting
+        return [{
+            'start': c['start'],
+            'end': c['end'],
+            'text': c['text'].strip()
+        } for c in captions]
 
 
 # Public API: transcribe MP4 and save ASS captions
-def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None):
+def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None, position=None):
     """Transcribe a video file and write an .ass captions file.
     Returns the path to the generated .ass file.
     """
@@ -286,8 +407,8 @@ def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | 
             "verbose": True,
             "word_timestamps": True
         }
-        if language:  # only pass if user specified a language
-            transcribe_args["language"] = language.lower()  # Whisper expects lowercase
+        if language:  # only pass if specified
+            transcribe_args["language"] = language.lower()
 
         result = model.transcribe(str(video_path), **transcribe_args)
     except TypeError:
@@ -305,7 +426,65 @@ def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | 
     
     log_message("INFO", "Saving ASS file...")
     ass_path = os.path.join(TRANSCRIPTIONS_DIR, f"{video_path.stem}.ass")
-    save_ass(segments, ass_path, video_path, style=style)
+    
+    # Apply custom position if provided (always ensure a style exists)
+    if position:
+        x_norm = float(position.get('x', 0.5))
+        y_norm = float(position.get('y', 0.75))
+
+        # Determine video resolution (needed to compute margins)
+        video_w, video_h = get_video_resolution(video_path)
+
+        # Ensure we have a style to modify
+        if style is None:
+            style = AssStyle.adaptive_for_video(video_w, video_h)
+
+        # ASS alignment mapping (1-9 grid)
+        # 7 8 9
+        # 4 5 6
+        # 1 2 3
+
+        # Horizontal part
+        if x_norm < 0.33:
+            horiz = 1  # Left column
+        elif x_norm > 0.67:
+            horiz = 3  # Right column
+        else:
+            horiz = 2  # Center column
+
+        # Vertical part
+        if y_norm < 0.33:
+            vert = 3  # Top row in ASS mapping uses +6 later 
+        elif y_norm > 0.67:
+            vert = 1  # Bottom row in ASS mapping
+        else:
+            vert = 2  # Middle row
+
+        # Convert to ASS alignment value
+        # ASS numbering: bottom-left=1, bottom-center=2, bottom-right=3,
+        # middle-left=4, middle-center=5, middle-right=6,
+        # top-left=7, top-center=8, top-right=9
+        # Map (vert,horiz) to the above
+        mapping = {
+            (1, 1): 1, (1, 2): 2, (1, 3): 3,
+            (2, 1): 4, (2, 2): 5, (2, 3): 6,
+            (3, 1): 7, (3, 2): 8, (3, 3): 9,
+        }
+        style.alignment = mapping[(vert, horiz)]
+
+        # Calculate horizontal margins: larger distance from center → increase margin.
+        # Use a simple heuristic that keeps captions inside safe area.
+        # Clamp to reasonable values.
+        margin_lr = int(video_w * max(0.02, min(0.45, abs(0.5 - x_norm) * 2.0)))
+        style.margin_l = margin_lr
+        style.margin_r = margin_lr
+
+        # Vertical margin: convert normalized center Y into ASS bottom margin.
+        # ASS margin_v is distance from bottom, so invert Y.
+        margin_v = int(video_h * max(0.02, min(0.45, (1.0 - y_norm) * 0.6)))
+        style.margin_v = margin_v
+    
+    save_ass(segments, ass_path, video_path, style=style, position=position)
     log_message("INFO", f"=== Transcription complete: {ass_path} ===")
     return ass_path
 
