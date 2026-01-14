@@ -1,3 +1,4 @@
+from __future__ import annotations #Must occur at the begining of the file
 '''
 Copyright (c) 2026 KLJ Enterprises, LLC.
 Licensed under the terms in the LICENSE file in the root of this repository.
@@ -14,7 +15,6 @@ This file owns:
 - Safe defaults for vertical video
 """
 
-from __future__ import annotations
 from pathlib import Path
 import json
 import re
@@ -264,4 +264,5 @@ class AssStyle:
         self.margin_l = max(0, min(self.margin_l, max_width))
         self.margin_r = max(0, min(self.margin_r, max_width))
         self.margin_v = max(0, min(self.margin_v, max_height))
+
 
