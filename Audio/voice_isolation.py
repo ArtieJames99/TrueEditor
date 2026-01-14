@@ -73,13 +73,13 @@ def conform_isolated_to_video(
     target_channels: int = 2,
 ):
     """
-    Resample & upmix's isolated_wav to target_sr/target_channels,
-    then trims/pads to exactly match the reference video's audio length.
+    Resample & upmix isolated_wav to target_sr/target_channels,
+    then trim/pad to exactly match the reference video's audio length.
     """
 
     out_wav.parent.mkdir(parents=True, exist_ok=True)
 
-    #  Extract reference audio (uniform SR/ch layout)
+    # 1) Extract reference audio (uniform SR/ch layout)
     ref_wav = out_wav.parent / f"{reference_video.stem}_ref.wav"
     subprocess.run([
         str(ffmpeg_exe), "-y",
@@ -91,7 +91,7 @@ def conform_isolated_to_video(
         str(ref_wav)
     ], check=True)
 
-    # Resample/upmix isolated to target
+    # 2) Resample/upmix isolated to target
     iso_resamp = out_wav.parent / f"{out_wav.stem}_resamp.wav"
     subprocess.run([
         str(ffmpeg_exe), "-y",
@@ -102,7 +102,7 @@ def conform_isolated_to_video(
         str(iso_resamp)
     ], check=True)
 
-    # Length match (pad/truncate)
+    # 3) Length match (pad/truncate)
     sr_ref, ref_data = wavfile.read(str(ref_wav))       # (N, 2)
     sr_iso, iso_data = wavfile.read(str(iso_resamp))    # (M, 2 or 1)
 
@@ -212,19 +212,19 @@ def process_voice_isolation(video_path: Path, temp_dir: Path = None):
     gated_wav = temp_dir / f"{video_path.stem}_voice_gated.wav"
     conform_wav = temp_dir / f"{video_path.stem}_voice_conformed.wav"
 
-    # Extract
+    # 1. Extract
     extract_audio(video_path, raw_wav)
 
-    # Gentle pre-normalization
+    # 2. Gentle pre-normalization
     prenormalize_audio(raw_wav, pre_wav)
 
-    # DeepFilterNet
+    # 3. DeepFilterNet
     isolated = isolate_voice(pre_wav, voice_wav)
     if not isolated:
         print("[WARN] Voice isolation failed, using raw audio.")
         return raw_wav
 
-    # Noise gate
+    # 4. Noise gate
     apply_noise_gate(isolated, gated_wav)
     
 
@@ -241,5 +241,4 @@ def process_voice_isolation(video_path: Path, temp_dir: Path = None):
 
     print(f"[DEBUG] Voice isolation complete: {conform_wav}")
     return conform_wav
-
    

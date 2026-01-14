@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from datetime import datetime
 import subprocess
@@ -17,6 +16,8 @@ LOUDNESS_TARGETS = {
     "youtube":   {"i": -14, "tp": -1.0, "lra": 11},
     "tiktok":    {"i": -14, "tp": -1.0, "lra": 11},
     "podcast":   {"i": -16, "tp": -1.5, "lra": 9},
+    "generic":  {"i": -14, "tp": -1.0, "lra": 11},
+    "custom": {"i": -14, "tp": -1.0, "lra": 11},  # Will be overridden by UI
 }
 
 # --------------------------------------------------
@@ -50,7 +51,9 @@ def process_audio(
     music_volume: float = 0.22,
     cleanup_level: str = "off",
     platform: str = "instagram",
-    isolated_audio: Path | None = None
+    isolated_audio: Path | None = None,
+    normalize: bool = False,           # Add this
+    target_lufs: int = -14
 ):
     """
     Final audio pipeline:
@@ -83,8 +86,14 @@ def process_audio(
     log_message("INFO", f"Audio cleanup: {cleanup_level}")
     log_message("INFO", f"Music enabled: {bool(music_path)}")
     log_message("INFO", f"Platform target: {platform}")
+    log_message("INFO", f"Custom normalization: {normalize} (target LUFS: {target_lufs})")
 
-    target = LOUDNESS_TARGETS[platform]
+    # custom LUFS when normalization is enabled (UI setting)
+    if normalize:
+        target = {"i": target_lufs, "tp": -1.0, "lra": 11}
+    else:
+        # Use platform defaults
+        target = LOUDNESS_TARGETS[platform]
 
     # --------------------------------------------------
     # Input indexing
@@ -147,7 +156,7 @@ def process_audio(
         )
 
         # Sidechain ducking (music ducks under voice)
-        # practical threshold; 0.15 ≈ -16.5 dBFS
+        # Use a practical threshold; 0.15 ≈ -16.5 dBFS
         filters.append(
             "[music][voice]"
             "sidechaincompress="
@@ -192,9 +201,9 @@ def process_audio(
         "-ar", "48000",
         "-ac", "2",
         "-movflags", "+faststart",
+        # Intentionally omit -shortest; rely on length-conformed isolated audio
         str(video_out)
     ]
 
     log_message("DEBUG", " ".join(cmd))
-
     subprocess.run(cmd, check=True)

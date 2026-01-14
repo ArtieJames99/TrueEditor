@@ -1,3 +1,8 @@
+'''
+Copyright (c) 2026 KLJ Enterprises, LLC.
+Licensed under the terms in the LICENSE file in the root of this repository.
+'''
+
 """
 ass_style.py
 Centralized ASS style representation for TrueEdits.
@@ -7,8 +12,6 @@ This file owns:
 - [V4+ Styles]
 - Margins, alignment, font, colors
 - Safe defaults for vertical video
-
-It intentionally does NOT touch dialogue events.
 """
 
 from __future__ import annotations
@@ -21,6 +24,10 @@ class AssStyle:
     """
     Represents a single ASS style (usually 'Default').
     Designed to be edited live by a GUI.
+
+    TODO: When Doing a batch formating, It uses the first files location on the GUI. It causes the Captions to be misplaced on videos
+    when the video files are different 1080 vs 4k, while using the same styling formatting. 
+    FIX: Reset the formatting to match the % location every time a new file is used. 
     """
 
     STYLE_FORMAT = (
@@ -34,7 +41,7 @@ class AssStyle:
         self,
         name: str = "Default",
         font_name: str = "Roboto",
-        font_size: int = 64,
+        font_size: int = 52,
         primary_color: str = "&H00FFFFFF",
         secondary_color: str = "&H000000FF",
         outline_color: str = "&H00000000",
@@ -82,13 +89,51 @@ class AssStyle:
     # ------------------------------------------------------------------
     # FACTORIES
     # ------------------------------------------------------------------
+    @classmethod
+    def adaptive_for_video(cls, width: int, height: int) -> "AssStyle":
+        """
+        Adaptive caption style that works for ALL aspect ratios.
+        """
+
+        aspect = width / height
+        min_dim = min(width, height)
+
+        # Font size scales off height (readability invariant)
+        font_size = int(height * 0.055)
+
+        # Vertical margin scales off height
+        margin_v = int(height * 0.10)
+
+        # Horizontal safe margins scale off width
+        margin_lr = int(width * 0.06)
+
+        # Spacing scales subtly with resolution
+        spacing = int(min_dim * 0.001)
+
+        # Alignment:
+        # Bottom-center for most content, center for ultra-wide
+        alignment = 2 if aspect < 2.2 else 8
+
+        return cls(
+            font_name="Roboto",
+            font_size=font_size,
+            margin_l=margin_lr,
+            margin_r=margin_lr,
+            margin_v=margin_v,
+            spacing=spacing,
+            alignment=alignment,
+            outline=max(2, int(font_size * 0.06)),
+            shadow=max(1, int(font_size * 0.03)),
+            play_res_x=width,
+            play_res_y=height,
+        )
 
     @classmethod
     def default_for_video(cls, width: int, height: int) -> "AssStyle":
         """
         Sensible defaults for vertical short-form content.
         """
-        font_size = int(height * 0.072)
+        font_size = int(height * 0.068)
         margin_v = int(height * 0.33)
         margin_lr = int(width * 0.037)
         spacing = int(width * 0.0005)
@@ -219,3 +264,4 @@ class AssStyle:
         self.margin_l = max(0, min(self.margin_l, max_width))
         self.margin_r = max(0, min(self.margin_r, max_width))
         self.margin_v = max(0, min(self.margin_v, max_height))
+
