@@ -1,4 +1,7 @@
-# Audio/voice_isolation.py
+'''
+Copyright (c) 2026 KLJ Enterprises, LLC.
+Licensed under the terms in the LICENSE file in the root of this repository.
+'''
 
 import os
 import torch

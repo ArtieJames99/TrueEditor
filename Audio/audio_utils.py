@@ -1,3 +1,7 @@
+'''
+Copyright (c) 2026 KLJ Enterprises, LLC.
+Licensed under the terms in the LICENSE file in the root of this repository.
+'''
 # Audio/audio_utils.py
 
 from pathlib import Path

@@ -1,3 +1,7 @@
+'''
+Copyright (c) 2026 KLJ Enterprises, LLC.
+Licensed under the terms in the LICENSE file in the root of this repository.
+'''
 from pathlib import Path
 from datetime import datetime
 import subprocess
