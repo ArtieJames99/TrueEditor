@@ -4,8 +4,10 @@ Licensed under the terms in the LICENSE file in the root of this repository.
 '''
 from __future__ import annotations
 import sys
+import re
 import inspect
 from pathlib import Path
+
 from typing import Callable, Optional, Dict, Any
 
 from PySide6.QtCore import (
@@ -21,7 +23,8 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QComboBox,
     QListWidget, QGroupBox,
     QSpinBox, QSlider, QFrame, QRadioButton, QFileDialog,
-    QStatusBar, QMessageBox, QProgressBar, QSizePolicy, QSpacerItem, QListWidgetItem, QStyle
+    QStatusBar, QMessageBox, QProgressBar, QSizePolicy, QSpacerItem, QListWidgetItem, QStyle, QSplitter, QScrollArea,
+    QTextEdit, QInputDialog
 )
 
 
@@ -71,6 +74,40 @@ def grab_first_frame(path: str) -> QPixmap:
         pass
     return pix
 
+def _app_base_dir() -> Path:
+    """
+    Returns a stable base directory for resources.
+
+    - Frozen (PyInstaller on Windows/macOS):
+      - Use the directory of the executable (.exe or the binary inside .app/Contents/MacOS).
+      - This ensures resources are found next to the built app.
+
+    - Source run:
+      - Use the project root inferred from this file's location:
+        <project>/ui/TrueEditor-UI.py  ->  base = <project>
+    """
+    if getattr(sys, "frozen", False):
+        # PyInstaller: sys.executable is:
+        #   Windows: .../YourApp.exe
+        #   macOS:   .../YourApp.app/Contents/MacOS/YourApp
+        exe_dir = Path(sys.executable).resolve().parent
+
+        # If you prefer keeping "final/transcriptions" alongside the .app bundle:
+        #   YourApp.app
+        #   final/
+        #     transcriptions/
+        # uncomment the next 4 lines:
+        #
+        # if sys.platform == "darwin":
+        #     # exe_dir = .../YourApp.app/Contents/MacOS
+        #     app_dir = exe_dir.parent.parent  # .../YourApp.app
+        #     return app_dir.parent            # folder containing YourApp.app
+
+        # Otherwise, default: place resources next to the exe (or inside .app/Contents/MacOS).
+        return exe_dir
+    else:
+        # Source: this file is at <project>/ui/TrueEditor-UI.py
+        return Path(__file__).resolve().parent.parent
 
 # -------------------------------
 # Custom ToggleSwitch (from your existing UI)
@@ -663,6 +700,7 @@ class TrueEditor(QMainWindow):
         self.tabs.addTab(self._captions_tab(), 'Captions')
         self.tabs.addTab(self._audio_tab(), 'Audio')
         self.tabs.addTab(self._branding_tab(), 'Branding')
+        self.tabs.addTab(self._edit_tab(), 'Edit')
         self.tabs.addTab(self._run_tab(), 'Run')
 
         # Status Bar + Progress
@@ -679,6 +717,12 @@ class TrueEditor(QMainWindow):
         default_output_path = str(Path(__file__).parent.parent / "final"/ "edited_videos")
         self.output_path.setText(default_output_path)
 
+        base = _app_base_dir()
+        # Fixed relative: <base>/final/transcriptions
+        self.transcriptions_dir = (base / "final" / "transcriptions").resolve()
+        self.transcriptions_dir.mkdir(parents=True, exist_ok=True)
+
+
         # Menu & toolbar
         self._apply_qss()
 
@@ -687,7 +731,7 @@ class TrueEditor(QMainWindow):
         qss = '''
         /* ===== GLOBAL ===== */
         QWidget {
-            background-color: #121417;
+            background-color: #1A1D21;
             color: #E6E8EB;
             font-family: "Segoe UI", "Inter", sans-serif;
             font-size: 13px;
@@ -735,17 +779,167 @@ class TrueEditor(QMainWindow):
         /* Primary sections (Project / Input) */
         QGroupBox#primary {
             border: 1px solid #3A8DFF;
+            border-radius: 6px;
+        }
+
+        /* Primary controls - visual grouping */
+        #HomeTabContainer QGroupBox#primary {
+            border: 1px solid #3A8DFF;
+            border-radius: 6px;
+        }
+
+        /* Primary controls - visual grouping */
+        #HomeTabContainer QGroupBox#primary > QFormLayout > QWidget,
+        #HomeTabContainer QGroupBox#primary > QVBoxLayout > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in primary controls */
+        #HomeTabContainer QGroupBox#primary QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in primary controls */
+        #HomeTabContainer QGroupBox#primary QLineEdit,
+        #HomeTabContainer QGroupBox#primary QComboBox,
+        #HomeTabContainer QGroupBox#primary QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in primary controls */
+        #HomeTabContainer QGroupBox#primary QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #HomeTabContainer QGroupBox#primary QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in primary controls */
+        #HomeTabContainer QGroupBox#primary QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #HomeTabContainer QGroupBox#primary QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #HomeTabContainer QGroupBox#primary QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Toggle switches in primary controls */
+        #HomeTabContainer QGroupBox#primary ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #HomeTabContainer QGroupBox#primary ToggleSwitch:hover {
+            background-color: #1A1D21;
         }
 
         /* Secondary container (Quick Start) */
         QGroupBox#secondary {
-            background-color: #181B1F;
+            background-color: #1A1D21;
+            border-radius: 6px;
+        }
+
+        /* Quick Start controls - visual grouping */
+        #HomeTabContainer QGroupBox#secondary {
+            background-color: #1A1D21;
+            border-radius: 6px;
+        }
+
+        /* Quick Start controls - visual grouping */
+        #HomeTabContainer QGroupBox#secondary > QFormLayout > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in quick start controls */
+        #HomeTabContainer QGroupBox#secondary QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in quick start controls */
+        #HomeTabContainer QGroupBox#secondary QLineEdit,
+        #HomeTabContainer QGroupBox#secondary QComboBox,
+        #HomeTabContainer QGroupBox#secondary QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in quick start controls */
+        #HomeTabContainer QGroupBox#secondary QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #HomeTabContainer QGroupBox#secondary QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in quick start controls */
+        #HomeTabContainer QGroupBox#secondary QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #HomeTabContainer QGroupBox#secondary QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #HomeTabContainer QGroupBox#secondary QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Toggle switches in quick start controls */
+        #HomeTabContainer QGroupBox#secondary ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #HomeTabContainer QGroupBox#secondary ToggleSwitch:hover {
+            background-color: #1A1D21;
         }
 
         /* Drawer / nested configs */
         QGroupBox#drawer {
-            background-color: #14161A;
+            background-color: #121417;
             border: 1px solid #262A31;
+            border-radius: 6px;
             margin-top: 6px;
             padding: 10px;
         }
@@ -755,6 +949,309 @@ class TrueEditor(QMainWindow):
             color: #7F8893;
         }
 
+        /* Drawer controls - visual grouping */
+        QGroupBox#drawer > QFormLayout > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in drawer controls */
+        QGroupBox#drawer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in drawer controls */
+        QGroupBox#drawer QLineEdit,
+        QGroupBox#drawer QComboBox,
+        QGroupBox#drawer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in drawer controls */
+        QGroupBox#drawer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        QGroupBox#drawer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in drawer controls */
+        QGroupBox#drawer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        QGroupBox#drawer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        QGroupBox#drawer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Home tab drawer controls - visual grouping */
+        #HomeTabContainer QGroupBox#drawer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 6px;
+            padding: 10px;
+        }
+
+        #HomeTabContainer QGroupBox#drawer::title {
+            font-size: 11px;
+            color: #7F8893;
+        }
+
+        /* Drawer controls - visual grouping */
+        #HomeTabContainer QGroupBox#drawer > QFormLayout > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in drawer controls */
+        #HomeTabContainer QGroupBox#drawer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in drawer controls */
+        #HomeTabContainer QGroupBox#drawer QLineEdit,
+        #HomeTabContainer QGroupBox#drawer QComboBox,
+        #HomeTabContainer QGroupBox#drawer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in drawer controls */
+        #HomeTabContainer QGroupBox#drawer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #HomeTabContainer QGroupBox#drawer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in drawer controls */
+        #HomeTabContainer QGroupBox#drawer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #HomeTabContainer QGroupBox#drawer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #HomeTabContainer QGroupBox#drawer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Toggle switches in drawer controls */
+        #HomeTabContainer QGroupBox#drawer ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #HomeTabContainer QGroupBox#drawer ToggleSwitch:hover {
+            background-color: #1A1D21;
+        }
+
+        /* Caption controls container */
+        #IvCaptionControlsContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #IvCaptionControlsContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in control rows */
+        #IvCaptionControlsContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in control rows */
+        #IvCaptionControlsContainer QLineEdit,
+        #IvCaptionControlsContainer QComboBox,
+        #IvCaptionControlsContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in control rows */
+        #IvCaptionControlsContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #IvCaptionControlsContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in control rows */
+        #IvCaptionControlsContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #IvCaptionControlsContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #IvCaptionControlsContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside caption controls */
+        #IvCaptionControlsContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #IvCaptionControlsContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Captions tab container - visual grouping */
+        #CaptionsTabContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #CaptionsTabContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in captions tab controls */
+        #CaptionsTabContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in captions tab controls */
+        #CaptionsTabContainer QLineEdit,
+        #CaptionsTabContainer QComboBox,
+        #CaptionsTabContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in captions tab controls */
+        #CaptionsTabContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #CaptionsTabContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in captions tab controls */
+        #CaptionsTabContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #CaptionsTabContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #CaptionsTabContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside captions tab controls */
+        #CaptionsTabContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #CaptionsTabContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Captions tab toggle switches - visual grouping */
+        #CaptionsTabContainer ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #CaptionsTabContainer ToggleSwitch:hover {
+            background-color: #1A1D21;
+        }
 
         /* ===== INPUTS ===== */
 
@@ -767,6 +1264,514 @@ class TrueEditor(QMainWindow):
 
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus { 
             border: 1px solid #3A8DFF; 
+        }
+
+        /* Branding controls container */
+        #IvBrandingControlsContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #IvBrandingControlsContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in branding control rows */
+        #IvBrandingControlsContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in branding control rows */
+        #IvBrandingControlsContainer QLineEdit,
+        #IvBrandingControlsContainer QComboBox,
+        #IvBrandingControlsContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in branding control rows */
+        #IvBrandingControlsContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #IvBrandingControlsContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in branding control rows */
+        #IvBrandingControlsContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #IvBrandingControlsContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #IvBrandingControlsContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside branding controls */
+        #IvBrandingControlsContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #IvBrandingControlsContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Branding tab container - visual grouping */
+        #BrandingTabContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #BrandingTabContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in branding tab controls */
+        #BrandingTabContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in branding tab controls */
+        #BrandingTabContainer QLineEdit,
+        #BrandingTabContainer QComboBox,
+        #BrandingTabContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in branding tab controls */
+        #BrandingTabContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #BrandingTabContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in branding tab controls */
+        #BrandingTabContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #BrandingTabContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #BrandingTabContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside branding tab controls */
+        #BrandingTabContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #BrandingTabContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Branding tab toggle switches - visual grouping */
+        #BrandingTabContainer ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #BrandingTabContainer ToggleSwitch:hover {
+            background-color: #1A1D21;
+        }
+
+        /* Audio controls container */
+        #AudioControlsContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #AudioControlsContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in audio control rows */
+        #AudioControlsContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in audio control rows */
+        #AudioControlsContainer QLineEdit,
+        #AudioControlsContainer QComboBox,
+        #AudioControlsContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in audio control rows */
+        #AudioControlsContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #AudioControlsContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in audio control rows */
+        #AudioControlsContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #AudioControlsContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #AudioControlsContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside audio controls */
+        #AudioControlsContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #AudioControlsContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Audio tab container - visual grouping */
+        #AudioTabContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #AudioTabContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in audio tab controls */
+        #AudioTabContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in audio tab controls */
+        #AudioTabContainer QLineEdit,
+        #AudioTabContainer QComboBox,
+        #AudioTabContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in audio tab controls */
+        #AudioTabContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #AudioTabContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in audio tab controls */
+        #AudioTabContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #AudioTabContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #AudioTabContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside audio tab controls */
+        #AudioTabContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #AudioTabContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Audio tab toggle switches - visual grouping */
+        #AudioTabContainer ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #AudioTabContainer ToggleSwitch:hover {
+            background-color: #1A1D21;
+        }
+
+        /* Home tab controls - visual grouping */
+        #HomeTabContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #HomeTabContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in home tab controls */
+        #HomeTabContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in home tab controls */
+        #HomeTabContainer QLineEdit,
+        #HomeTabContainer QComboBox,
+        #HomeTabContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in home tab controls */
+        #HomeTabContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #HomeTabContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Sliders in home tab controls */
+        #HomeTabContainer QSlider {
+            background-color: #121417;
+            border: none;
+        }
+
+        #HomeTabContainer QSlider::groove:horizontal {
+            background: #2A2F36;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        #HomeTabContainer QSlider::handle:horizontal {
+            background: #3A8DFF;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            margin: -5px 0;
+        }
+
+        /* Group boxes inside home tab controls */
+        #HomeTabContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #HomeTabContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Run tab controls - visual grouping */
+        #RunTabContainer {
+            background-color: #121417;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        /* Control row backgrounds for visual grouping */
+        #RunTabContainer > QWidget {
+            background-color: #14161A;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+
+        /* Labels in run tab controls */
+        #RunTabContainer QLabel {
+            color: #9AA4AF;
+            font-weight: 500;
+        }
+
+        /* Input fields in run tab controls */
+        #RunTabContainer QLineEdit,
+        #RunTabContainer QComboBox,
+        #RunTabContainer QSpinBox {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+
+        /* Buttons in run tab controls */
+        #RunTabContainer QPushButton {
+            background-color: #1F2430;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            padding: 4px 12px;
+        }
+
+        #RunTabContainer QPushButton:hover {
+            background-color: #2A2F36;
+        }
+
+        /* Progress bars in run tab controls */
+        #RunTabContainer QProgressBar {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        #RunTabContainer QProgressBar::chunk {
+            background-color: #3A8DFF;
+            border-radius: 3px;
+        }
+
+        /* Lists in run tab controls */
+        #RunTabContainer QListWidget {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 4px;
+        }
+
+        #RunTabContainer QListWidget::item:selected {
+            background-color: #3A8DFF;
+        }
+
+        /* Group boxes inside run tab controls */
+        #RunTabContainer QGroupBox {
+            background-color: #14161A;
+            border: 1px solid #262A31;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 10px;
+        }
+
+        #RunTabContainer QGroupBox::title {
+            color: #9AA4AF;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* Run tab toggle switches - visual grouping */
+        #RunTabContainer ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #RunTabContainer ToggleSwitch:hover {
+            background-color: #1A1D21;
         }
 
         /* ===== BUTTONS ===== */
@@ -810,8 +1815,19 @@ class TrueEditor(QMainWindow):
         /* ===== LISTS ===== */
         QListWidget { background-color: #121417; border: 1px solid #2A2F36; border-radius: 6px; }
         QListWidget::item:selected { background-color: #3A8DFF; }
+
+        /* Home tab lists - visual grouping */
+        #HomeTabContainer QListWidget {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 6px;
+        }
+
+        #HomeTabContainer QListWidget::item:selected {
+            background-color: #3A8DFF;
+        }
         /* ===== STATUS BAR ===== */
-        QStatusBar { background-color: #1A1D21; border-top: 1px solid #2A2F36; color: #9AA4AF; }
+        QStatusBar { background-color: #121417; border-top: 1px solid #2A2F36; color: #9AA4AF; }
         /* ===== RADIO BUTTONS ===== */
         QRadioButton { spacing: 6px; color: #E6E8EB; font-size: 13px; }
         QRadioButton::indicator {
@@ -820,6 +1836,19 @@ class TrueEditor(QMainWindow):
         QRadioButton::indicator:checked { border-color: #3A8DFF; background: #3A8DFF; }
         QRadioButton::indicator:hover { border-color: #5AA2FF; }
         QRadioButton::indicator:disabled { border-color: #444A52; background: #1A1D21; opacity: 0.5; }
+
+        /* Home tab toggle switches - visual grouping */
+        #HomeTabContainer ToggleSwitch {
+            background-color: #121417;
+            border: 1px solid #2A2F36;
+            border-radius: 14px;
+            padding: 2px;
+        }
+
+        #HomeTabContainer ToggleSwitch:hover {
+            background-color: #1A1D21;
+        }
+
         '''
         QApplication.instance().setStyleSheet(qss)
 
@@ -828,6 +1857,8 @@ class TrueEditor(QMainWindow):
     # -----------------------------
     ''' 
     TODO:  
+    IMPORTANT: vocal isolation and Music, when using UI do not function correctly.
+    - Clear .ass files from cache when directed (ask to clear yes or no)  
     - Update model selection for Vocal Isolation
     - Update language selection to match openai-whisper functionality eg:tagalog = tl
     - Add Save/Load  Preset Functionality
@@ -861,6 +1892,7 @@ class TrueEditor(QMainWindow):
 
     def _home_tab(self) -> QWidget:
         root = QWidget()
+        root.setObjectName("HomeTabContainer")
         main_layout = QVBoxLayout(root)
         content_layout = QHBoxLayout()
         
@@ -926,6 +1958,13 @@ class TrueEditor(QMainWindow):
         self.model_size_combo.setCurrentText('Small')
         caption_config_layout.addRow('Speech Model', self.model_size_combo)
 
+        # Separator in captions settings
+        separator_home_caption = QFrame()
+        separator_home_caption.setFrameShape(QFrame.HLine)
+        separator_home_caption.setFrameShadow(QFrame.Sunken)
+        separator_home_caption.setStyleSheet("background-color: #262A31; margin: 4px 0;")
+        caption_config_layout.addRow(separator_home_caption)
+
         self.caption_language_combo = QComboBox()
         self.caption_language_combo.addItems(
             ['Auto', 'English', 'Spanish', 'Chinese', 'French', 'German', 'Italian']
@@ -958,6 +1997,13 @@ class TrueEditor(QMainWindow):
 
         self.home_voice_isolation_toggle = ToggleSwitch()
         audio_config_layout.addRow('Vocal Isolation', self.home_voice_isolation_toggle)
+
+        # Separator in audio settings
+        separator_home_audio = QFrame()
+        separator_home_audio.setFrameShape(QFrame.HLine)
+        separator_home_audio.setFrameShadow(QFrame.Sunken)
+        separator_home_audio.setStyleSheet("background-color: #262A31; margin: 4px 0;")
+        audio_config_layout.addRow(separator_home_audio)
 
         self.home_music_toggle = ToggleSwitch()
         audio_config_layout.addRow('Enable Music', self.home_music_toggle)
@@ -1044,10 +2090,14 @@ class TrueEditor(QMainWindow):
 
     def _captions_tab(self) -> QWidget:
         root = QWidget()
+        root.setObjectName("CaptionsTabContainer")
         layout = QHBoxLayout(root)
 
+        # Use a QSplitter to allow resizing of the style panel and preview
+        splitter = QSplitter(Qt.Horizontal)
+
         # -------------------------
-        # Style panel
+        # Style panel (Left side)
         # -------------------------
         style_box = QGroupBox('Caption Style')
         style_layout = QVBoxLayout(style_box)
@@ -1062,7 +2112,7 @@ class TrueEditor(QMainWindow):
 
         style_layout.addLayout(captions_row)
         model_row = QHBoxLayout()
-        model_row.addWidget (QLabel('AI Model'))
+        model_row.addWidget(QLabel('AI Model'))
         self.ai_model_combo = QComboBox()
         self.ai_model_combo.addItems(['Tiny', 'Small', 'Medium', 'Large'])
         self.ai_model_combo.setCurrentIndex(1)  # Default to small
@@ -1093,6 +2143,13 @@ class TrueEditor(QMainWindow):
 
         caption_controls_layout.addLayout(lang_row)
 
+        # Separator
+        separator1 = QFrame()
+        separator1.setFrameShape(QFrame.HLine)
+        separator1.setFrameShadow(QFrame.Sunken)
+        separator1.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator1)
+
         # -------------------------
         # Font
         # -------------------------
@@ -1111,6 +2168,13 @@ class TrueEditor(QMainWindow):
 
         caption_controls_layout.addLayout(font_row)
 
+        # Separator
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.HLine)
+        separator2.setFrameShadow(QFrame.Sunken)
+        separator2.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator2)
+
         # -------------------------
         # Font Color
         # -------------------------
@@ -1121,6 +2185,13 @@ class TrueEditor(QMainWindow):
         base_color_row.addWidget(self.base_color_btn)
 
         caption_controls_layout.addLayout(base_color_row)
+
+        # Separator
+        separator3 = QFrame()
+        separator3.setFrameShape(QFrame.HLine)
+        separator3.setFrameShadow(QFrame.Sunken)
+        separator3.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator3)
 
         # -------------------------
         # Text Toggles
@@ -1141,49 +2212,64 @@ class TrueEditor(QMainWindow):
 
         caption_controls_layout.addLayout(toggles_row)
 
+        # Separator
+        separator4 = QFrame()
+        separator4.setFrameShape(QFrame.HLine)
+        separator4.setFrameShadow(QFrame.Sunken)
+        separator4.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator4)
+
         # -------------------------
         # Background Group (SINGLE source of truth)
         # -------------------------
         bg_group = QGroupBox('Background')
         bg_form = QFormLayout(bg_group)
 
+        # Enabled and Color inline
+        enabled_color_row = QHBoxLayout()
+        enabled_color_row.addWidget(QLabel('Enabled'))
         self.background_toggle = ToggleSwitch()
         self.background_toggle.setChecked(False)
-
+        enabled_color_row.addWidget(self.background_toggle)
+        
+        enabled_color_row.addWidget(QLabel('Color'))
         self.background_color_btn = QPushButton('Background Color')
+        enabled_color_row.addWidget(self.background_color_btn)
 
+        # Padding and Corner Radius inline
+        padding_radius_row = QHBoxLayout()
+        padding_radius_row.addWidget(QLabel('Padding (px)'))
         self.bg_padding_spin = QSpinBox()
         self.bg_padding_spin.setRange(0, 60)
         self.bg_padding_spin.setValue(12)
+        padding_radius_row.addWidget(self.bg_padding_spin)
 
+        padding_radius_row.addWidget(QLabel('Corner Radius (px)'))
         self.bg_radius_spin = QSpinBox()
         self.bg_radius_spin.setRange(0, 60)
         self.bg_radius_spin.setValue(12)
+        padding_radius_row.addWidget(self.bg_radius_spin)
 
         self.bg_opacity_slider = QSlider(Qt.Horizontal)
         self.bg_opacity_slider.setRange(0, 255)
         self.bg_opacity_slider.setValue(180)
 
-        self.bg_maxwidth_slider = QSlider(Qt.Horizontal)
-        self.bg_maxwidth_slider.setRange(40, 100)
-        self.bg_maxwidth_slider.setValue(85)
-
-        self.align_combo = QComboBox()
-        self.align_combo.addItems(['Center', 'Left', 'Right'])
-
         self.safezone_toggle = ToggleSwitch()
         self.safezone_toggle.toggled.connect(self._update_preview_style)
 
-        bg_form.addRow('Enabled', self.background_toggle)
-        bg_form.addRow('Color', self.background_color_btn)
-        bg_form.addRow('Padding (px)', self.bg_padding_spin)
-        bg_form.addRow('Corner Radius (px)', self.bg_radius_spin)
+        bg_form.addRow(enabled_color_row)
+        bg_form.addRow(padding_radius_row)
         bg_form.addRow('Opacity', self.bg_opacity_slider)
-        bg_form.addRow('Max Width (%)', self.bg_maxwidth_slider)
-        bg_form.addRow('Alignment', self.align_combo)
         bg_form.addRow('Safe Zone', self.safezone_toggle)
 
         caption_controls_layout.addWidget(bg_group)
+
+        # Separator
+        separator5 = QFrame()
+        separator5.setFrameShape(QFrame.HLine)
+        separator5.setFrameShadow(QFrame.Sunken)
+        separator5.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator5)
 
         # -------------------------
         # Karaoke
@@ -1199,12 +2285,21 @@ class TrueEditor(QMainWindow):
 
         caption_controls_layout.addLayout(karaoke_row)
 
+        # Separator
+        separator6 = QFrame()
+        separator6.setFrameShape(QFrame.HLine)
+        separator6.setFrameShadow(QFrame.Sunken)
+        separator6.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator6)
+
         # -------------------------
         # Caption Length Mode
         # -------------------------
         length_mode_box = QGroupBox('Caption Length Mode')
-        length_mode_layout = QHBoxLayout(length_mode_box)
+        length_mode_layout = QVBoxLayout(length_mode_box)
 
+        # Length mode buttons row
+        buttons_row = QHBoxLayout()
         self.line_mode_btn = QPushButton('Line Mode')
         self.single_word_btn = QPushButton('Single Word')
         self.movie_mode_btn = QPushButton('Movie Mode')
@@ -1234,11 +2329,27 @@ class TrueEditor(QMainWindow):
         self.single_word_btn.clicked.connect(lambda: self._on_length_mode_changed('single_word'))
         self.movie_mode_btn.clicked.connect(lambda: self._on_length_mode_changed('movie'))
 
-        length_mode_layout.addWidget(self.line_mode_btn)
-        length_mode_layout.addWidget(self.single_word_btn)
-        length_mode_layout.addWidget(self.movie_mode_btn)
+        buttons_row.addWidget(self.line_mode_btn)
+        buttons_row.addWidget(self.single_word_btn)
+        buttons_row.addWidget(self.movie_mode_btn)
+        length_mode_layout.addLayout(buttons_row)
+
+        # Alignment dropdown row
+        alignment_row = QHBoxLayout()
+        alignment_row.addWidget(QLabel('Alignment'))
+        self.align_combo = QComboBox()
+        self.align_combo.addItems(['Center', 'Left', 'Right'])
+        alignment_row.addWidget(self.align_combo)
+        length_mode_layout.addLayout(alignment_row)
 
         caption_controls_layout.addWidget(length_mode_box)
+
+        # Separator
+        separator7 = QFrame()
+        separator7.setFrameShape(QFrame.HLine)
+        separator7.setFrameShadow(QFrame.Sunken)
+        separator7.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        caption_controls_layout.addWidget(separator7)
 
         # -------------------------
         # Caption Coordinates
@@ -1273,14 +2384,32 @@ class TrueEditor(QMainWindow):
         style_layout.addWidget(self.caption_controls_container)
         style_layout.addWidget(self.iv_caption_controls_container)
 
-        # Preview (ALWAYS visible)
+        # Wrap the style panel in a QScrollArea to handle overflow
+        style_scroll = QScrollArea()
+        style_scroll.setWidget(style_box)
+        style_scroll.setWidgetResizable(True)
+        style_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        style_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        style_scroll.setMinimumWidth(300)  # Minimum width for the style panel
+
+        # -------------------------
+        # Preview (Right side)
+        # -------------------------
         self.caption_preview = CaptionPreview()
+        self.caption_preview.setMinimumSize(400, 300)  # Minimum size for preview
+        self.caption_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Connect the position changed signal to update spinboxes
         self.caption_preview.positionChanged.connect(self._on_preview_position_changed)
 
-        layout.addWidget(style_box, 2)
-        layout.addWidget(self.caption_preview, 3)
+        # Add widgets to splitter
+        splitter.addWidget(style_scroll)
+        splitter.addWidget(self.caption_preview)
+
+        # Set splitter sizes (initial ratio)
+        splitter.setSizes([600, 400])
+
+        layout.addWidget(splitter)
 
         # -------------------------
         # Signal wiring
@@ -1301,7 +2430,6 @@ class TrueEditor(QMainWindow):
 
         # Sliders
         self.bg_opacity_slider.valueChanged.connect(self._update_preview_style)
-        self.bg_maxwidth_slider.valueChanged.connect(self._update_preview_style)
 
         # ToggleSwitches
         self.bold_toggle.toggled.connect(self._update_preview_style)
@@ -1323,10 +2451,12 @@ class TrueEditor(QMainWindow):
 
     def _audio_tab(self) -> QWidget:
         root = QWidget()
+        root.setObjectName("AudioTabContainer")
         layout = QHBoxLayout(root)
 
         #----------- Audio Controls -----------
         controls_box = QGroupBox('Audio Controls')
+        controls_box.setObjectName("AudioControlsContainer")
         controls_layout = QVBoxLayout(controls_box)
 
         normalize_row = QHBoxLayout()
@@ -1334,6 +2464,13 @@ class TrueEditor(QMainWindow):
         self.normalize_toggle = ToggleSwitch()
         normalize_row.addWidget(self.normalize_toggle)
         controls_layout.addLayout(normalize_row)
+
+        # Separator
+        separator_audio1 = QFrame()
+        separator_audio1.setFrameShape(QFrame.HLine)
+        separator_audio1.setFrameShadow(QFrame.Sunken)
+        separator_audio1.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        controls_layout.addWidget(separator_audio1)
 
         controls_layout.addWidget(QLabel('Target LUFS'))
         self.lufs_slider = QSlider(Qt.Horizontal)
@@ -1343,11 +2480,25 @@ class TrueEditor(QMainWindow):
         controls_layout.addWidget(self.lufs_slider)
         self.normalize_toggle.toggled.connect(lambda checked: self.lufs_slider.setEnabled(checked))
 
+        # Separator
+        separator_audio2 = QFrame()
+        separator_audio2.setFrameShape(QFrame.HLine)
+        separator_audio2.setFrameShadow(QFrame.Sunken)
+        separator_audio2.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        controls_layout.addWidget(separator_audio2)
+
         voice_row = QHBoxLayout()
         voice_row.addWidget(QLabel('Voice Isolation'))
         self.voice_toggle = ToggleSwitch()
         voice_row.addWidget(self.voice_toggle)
         controls_layout.addLayout(voice_row)
+
+        # Separator
+        separator_audio3 = QFrame()
+        separator_audio3.setFrameShape(QFrame.HLine)
+        separator_audio3.setFrameShadow(QFrame.Sunken)
+        separator_audio3.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        controls_layout.addWidget(separator_audio3)
 
         music_row = QHBoxLayout()
         music_row.addWidget(QLabel('Background Music'))
@@ -1358,6 +2509,13 @@ class TrueEditor(QMainWindow):
         self.select_music_btn = QPushButton('Select Music')
         self.select_music_btn.clicked.connect(self._select_music)
         controls_layout.addWidget(self.select_music_btn)
+
+        # Separator
+        separator_audio4 = QFrame()
+        separator_audio4.setFrameShape(QFrame.HLine)
+        separator_audio4.setFrameShadow(QFrame.Sunken)
+        separator_audio4.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        controls_layout.addWidget(separator_audio4)
 
         # Music Volume Control
         volume_row = QHBoxLayout()
@@ -1372,6 +2530,13 @@ class TrueEditor(QMainWindow):
         controls_layout.addLayout(volume_row)
         self.music_toggle.toggled.connect(lambda checked: self.music_volume_slider.setEnabled(checked))
         self.music_volume_slider.valueChanged.connect(lambda val: self.music_volume_label.setText(f'{val}%'))
+
+        # Separator
+        separator_audio5 = QFrame()
+        separator_audio5.setFrameShape(QFrame.HLine)
+        separator_audio5.setFrameShadow(QFrame.Sunken)
+        separator_audio5.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        controls_layout.addWidget(separator_audio5)
 
         # Cleanup Level Control
         cleanup_row = QHBoxLayout()
@@ -1407,7 +2572,11 @@ class TrueEditor(QMainWindow):
 
     def _branding_tab(self) -> QWidget:
         root = QWidget()
+        root.setObjectName("BrandingTabContainer")
         layout = QHBoxLayout(root)
+
+        # Use a QSplitter to allow resizing of the configuration panel and preview
+        splitter = QSplitter(Qt.Horizontal)
 
         # -------------------------
         # Branding Configuration (Left Column)
@@ -1452,6 +2621,13 @@ class TrueEditor(QMainWindow):
         
         branding_controls_layout.addLayout(type_row)
 
+        # Separator
+        separator_brand1 = QFrame()
+        separator_brand1.setFrameShape(QFrame.HLine)
+        separator_brand1.setFrameShadow(QFrame.Sunken)
+        separator_brand1.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        branding_controls_layout.addWidget(separator_brand1)
+
         # -------------------------
         # Media Selection
         # -------------------------
@@ -1467,6 +2643,13 @@ class TrueEditor(QMainWindow):
         
         branding_controls_layout.addWidget(media_group)
 
+        # Separator
+        separator_brand2 = QFrame()
+        separator_brand2.setFrameShape(QFrame.HLine)
+        separator_brand2.setFrameShadow(QFrame.Sunken)
+        separator_brand2.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        branding_controls_layout.addWidget(separator_brand2)
+
         # -------------------------
         # Branding Content
         # -------------------------
@@ -1480,6 +2663,13 @@ class TrueEditor(QMainWindow):
         content_form.addRow('Subtext', self.brand_subtext)
         
         branding_controls_layout.addWidget(content_group)
+
+        # Separator
+        separator_brand3 = QFrame()
+        separator_brand3.setFrameShape(QFrame.HLine)
+        separator_brand3.setFrameShadow(QFrame.Sunken)
+        separator_brand3.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        branding_controls_layout.addWidget(separator_brand3)
 
         # -------------------------
         # Branding Position
@@ -1511,23 +2701,34 @@ class TrueEditor(QMainWindow):
         
         branding_controls_layout.addWidget(position_group)
 
+        # Separator
+        separator_brand4 = QFrame()
+        separator_brand4.setFrameShape(QFrame.HLine)
+        separator_brand4.setFrameShadow(QFrame.Sunken)
+        separator_brand4.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        branding_controls_layout.addWidget(separator_brand4)
+
         # -------------------------
         # Branding Size/Opacity
         # -------------------------
         size_group = QGroupBox('Branding Size & Opacity')
         size_form = QFormLayout(size_group)
         
+        # Width and Opacity inline
+        width_opacity_row = QHBoxLayout()
+        width_opacity_row.addWidget(QLabel('Width (px)'))
         self.brand_width_spin = QSpinBox()
         self.brand_width_spin.setRange(50, 500)
         self.brand_width_spin.setValue(200)
-        self.brand_width_spin.setSuffix('px')
-        
+        width_opacity_row.addWidget(self.brand_width_spin)
+
+        width_opacity_row.addWidget(QLabel('Opacity (%)'))
         self.brand_opacity_slider = QSlider(Qt.Horizontal)
         self.brand_opacity_slider.setRange(0, 100)
         self.brand_opacity_slider.setValue(100)
-        
-        size_form.addRow('Width', self.brand_width_spin)
-        size_form.addRow('Opacity', self.brand_opacity_slider)
+        width_opacity_row.addWidget(self.brand_opacity_slider)
+
+        size_form.addRow(width_opacity_row)
         
         branding_controls_layout.addWidget(size_group)
 
@@ -1535,16 +2736,32 @@ class TrueEditor(QMainWindow):
         branding_layout.addWidget(self.branding_controls_container)
         branding_layout.addWidget(self.iv_branding_controls_container)
 
+        # Wrap the branding panel in a QScrollArea to handle overflow
+        branding_scroll = QScrollArea()
+        branding_scroll.setWidget(branding_box)
+        branding_scroll.setWidgetResizable(True)
+        branding_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        branding_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        branding_scroll.setMinimumWidth(300)  # Minimum width for the branding panel
+
         # -------------------------
         # Branding Preview (Right Column)
         # -------------------------
         self.branding_preview = BrandingPreview()
+        self.branding_preview.setMinimumSize(400, 300)  # Minimum size for preview
+        self.branding_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # Connect the position changed signal to update spinboxes
         self.branding_preview.positionChanged.connect(self._on_branding_preview_position_changed)
 
-        layout.addWidget(branding_box, 2)
-        layout.addWidget(self.branding_preview, 3)
+        # Add widgets to splitter
+        splitter.addWidget(branding_scroll)
+        splitter.addWidget(self.branding_preview)
+
+        # Set splitter sizes (initial ratio)
+        splitter.setSizes([600, 400])
+
+        layout.addWidget(splitter)
 
         # -------------------------
         # Signal wiring
@@ -1569,8 +2786,113 @@ class TrueEditor(QMainWindow):
 
         return root
 
+
+    def _edit_tab(self) -> QWidget:
+        root = QWidget()
+        root.setObjectName("EditTabContainer")
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # === Splitter for controls (left) and preview (right) ===
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("EditTabSplitter")
+        splitter.setHandleWidth(8)
+
+        # ---------------- Left: Controls ----------------
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(8, 8, 8, 8)
+        controls_layout.setSpacing(8)
+
+        # Row of action buttons
+        btn_row = QHBoxLayout()
+        load_video_btn = QPushButton("Load Video")
+        load_video_btn.clicked.connect(self._load_edit_video)
+        btn_row.addWidget(load_video_btn)
+
+        self.btn_refresh_preview = QPushButton("Refresh Preview")
+        self.btn_refresh_preview.clicked.connect(self._refresh_edit_preview)
+        self.btn_refresh_preview.setEnabled(False)
+        btn_row.addWidget(self.btn_refresh_preview)
+
+        controls_layout.addLayout(btn_row)
+
+        # Caption list
+        caption_lbl = QLabel("Captions *Re-Run TrueEditor after edits are complete")
+        caption_lbl.setFont(QFont(caption_lbl.font().family(), pointSize=caption_lbl.font().pointSize(), weight=QFont.DemiBold))
+        controls_layout.addWidget(caption_lbl)
+
+        self.caption_list = QListWidget()
+        self.caption_list.itemDoubleClicked.connect(self._edit_caption_item)
+        self.caption_list.currentRowChanged.connect(self._on_caption_row_changed)
+        self.caption_list.setMinimumHeight(160)
+        self.caption_list.setAlternatingRowColors(True)
+        controls_layout.addWidget(self.caption_list, 1)  # give it stretch
+
+        # Raw .ass editor
+        raw_lbl = QLabel("Raw .ass Editor")
+        raw_lbl.setFont(QFont(raw_lbl.font().family(), pointSize=raw_lbl.font().pointSize(), weight=QFont.DemiBold))
+        controls_layout.addWidget(raw_lbl)
+
+        self.edit_ass_editor = QTextEdit()
+        self.edit_ass_editor.setPlaceholderText("Raw .ass content...")
+        self.edit_ass_editor.textChanged.connect(self._on_ass_text_changed)
+        self.edit_ass_editor.setEnabled(False)
+        controls_layout.addWidget(self.edit_ass_editor, 2)
+
+        # Save button row
+        action_row = QHBoxLayout()
+        self.save_btn = QPushButton("Save .ass")
+        self.save_btn.clicked.connect(self._save_edit_ass)
+        self.save_btn.setEnabled(False)
+        action_row.addWidget(self.save_btn)
+
+        # optional: revert button
+        self.revert_btn = QPushButton("Revert")
+        self.revert_btn.clicked.connect(self._revert_edit_ass)
+        self.revert_btn.setEnabled(False)
+        action_row.addWidget(self.revert_btn)
+
+        controls_layout.addLayout(action_row)
+
+        splitter.addWidget(controls)
+
+        # ---------------- Right: Preview ----------------
+        preview_panel = QWidget()
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(8, 8, 8, 8)
+        preview_layout.setSpacing(8)
+
+        prev_hdr = QHBoxLayout()
+        prev_lbl = QLabel("Preview")
+        prev_lbl.setFont(QFont(prev_lbl.font().family(), pointSize=prev_lbl.font().pointSize(), weight=QFont.DemiBold))
+        prev_hdr.addWidget(prev_lbl)
+        prev_hdr.addStretch(1)
+        preview_layout.addLayout(prev_hdr)
+
+        # Your preview surface (replace with your existing QWidget/label/canvas)
+        # We'll use a QLabel placeholder called self.edit_preview_view
+        self.edit_preview_view = QLabel("No preview")
+        self.edit_preview_view.setAlignment(Qt.AlignCenter)
+        self.edit_preview_view.setFrameShape(QFrame.StyledPanel)
+        self.edit_preview_view.setMinimumSize(QSize(320, 180))
+        self.edit_preview_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        preview_layout.addWidget(self.edit_preview_view, 1)
+
+        splitter.addWidget(preview_panel)
+
+        # Initial sizes: Left 2/3, Right 1/3 (you can tweak based on your window width)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([800, 400])
+
+        layout.addWidget(splitter)
+        return root
+
     def _run_tab(self) -> QWidget:
         root = QWidget()
+        root.setObjectName("RunTabContainer")
         layout = QVBoxLayout(root)
         
         # Batch Summary Section
@@ -1588,6 +2910,13 @@ class TrueEditor(QMainWindow):
         summary_layout.addRow('Status:', self.lbl_status)
         
         layout.addWidget(summary_group)
+
+        # Separator
+        separator_run1 = QFrame()
+        separator_run1.setFrameShape(QFrame.HLine)
+        separator_run1.setFrameShadow(QFrame.Sunken)
+        separator_run1.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        layout.addWidget(separator_run1)
         
         # Progress Section
         progress_group = QGroupBox('Progress')
@@ -1626,6 +2955,13 @@ class TrueEditor(QMainWindow):
         progress_layout.addLayout(stages_layout)
         
         layout.addWidget(progress_group)
+
+        # Separator
+        separator_run2 = QFrame()
+        separator_run2.setFrameShape(QFrame.HLine)
+        separator_run2.setFrameShadow(QFrame.Sunken)
+        separator_run2.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        layout.addWidget(separator_run2)
         
         # File Progress Section
         file_progress_group = QGroupBox('File Progress')
@@ -1636,6 +2972,13 @@ class TrueEditor(QMainWindow):
         file_progress_layout.addWidget(self.file_progress_list)
         
         layout.addWidget(file_progress_group)
+
+        # Separator
+        separator_run3 = QFrame()
+        separator_run3.setFrameShape(QFrame.HLine)
+        separator_run3.setFrameShadow(QFrame.Sunken)
+        separator_run3.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        layout.addWidget(separator_run3)
         
         # Log Section
         log_group = QGroupBox('Processing Log')
@@ -1652,6 +2995,13 @@ class TrueEditor(QMainWindow):
         log_layout.addLayout(log_controls)
         
         layout.addWidget(log_group)
+
+        # Separator
+        separator_run4 = QFrame()
+        separator_run4.setFrameShape(QFrame.HLine)
+        separator_run4.setFrameShadow(QFrame.Sunken)
+        separator_run4.setStyleSheet("background-color: #262A31; margin: 8px 0;")
+        layout.addWidget(separator_run4)
         
         # Control Buttons
         btns = QVBoxLayout()
@@ -2366,6 +3716,243 @@ class TrueEditor(QMainWindow):
             self.media_image_btn.setChecked(True)
         # Update preview immediately
         self.branding_preview.update()
+
+
+    def _ensure_transcriptions_dir(self):
+        """
+        Ensure we have a configured transcriptions directory.
+        Defaults to '<cwd>/final/transcriptions' if not already set.
+        You can override self.transcriptions_dir externally to match your deployment.
+        """
+        if not hasattr(self, "transcriptions_dir") or not self.transcriptions_dir:
+            # DEFAULT: project-relative folder; adjust if you want a fixed absolute path:
+            # e.g., Path(r"C:\TrueEdits-7\final\transcriptions")
+            self.transcriptions_dir = Path.cwd() / "final" / "transcriptions"
+        self.transcriptions_dir = Path(self.transcriptions_dir)
+
+
+    def _video_stem_without_edited(self, video_path: Path) -> str:
+        return re.sub(r'_Edited$', '', video_path.stem, flags=re.IGNORECASE)
+
+    def _ass_path_for_video(self, video_path: Path) -> Path:
+        base_stem = self._video_stem_without_edited(video_path)
+        return self.transcriptions_dir / f"{base_stem}.ass"
+
+    def _load_edit_video(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Video", "", "Video Files (*.mp4 *.avi *.mkv)"
+        )
+        if not file_path:
+            return
+
+        video_path = Path(file_path)
+        self.current_video_path = str(video_path)
+
+        ass_path = self._ass_path_for_video(video_path)
+
+        if ass_path.exists():
+            self._load_ass_for_edit(str(ass_path))
+            if hasattr(self, "_refresh_edit_preview"):
+                self._refresh_edit_preview()
+            return
+
+        # Optional: let user pick manually, but start in fixed directory
+        manual_ass, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Caption File",
+            str(self.transcriptions_dir),
+            "ASS Subtitles (*.ass)"
+        )
+        if manual_ass:
+            self._load_ass_for_edit(manual_ass)
+            if hasattr(self, "_refresh_edit_preview"):
+                self._refresh_edit_preview()
+        else:
+            QMessageBox.warning(
+                self,
+                "Caption Not Found",
+                (
+                    "No .ass file found for this video.\n\n"
+                    f"Expected:\n- {ass_path}"
+                )
+            )
+        
+    def _load_ass_for_edit(self, ass_path: str):
+        try:
+            import pysubs2
+            subs = pysubs2.load(ass_path)
+            self.caption_list.clear()
+            self.edit_ass_editor.clear()
+            for line in subs:
+                item_text = f"{line.start:.3f}s - {line.end:.3f}s: {line.text}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, line)  # Store the line object
+                self.caption_list.addItem(item)
+            # Also load raw content
+            with open(ass_path, 'r', encoding='utf-8') as f:
+                self.edit_ass_editor.setPlainText(f.read())
+            self.current_edit_ass_path = ass_path
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to load .ass: {str(e)}")
+
+    def _edit_caption_item(self, item):
+        # On double-click, edit the text
+        line = item.data(Qt.UserRole)
+        new_text, ok = QInputDialog.getText(self, "Edit Caption", "Text:", text=line.text)
+        if ok and new_text != line.text:
+            line.text = new_text
+            item.setText(f"{line.start:.3f}s - {line.end:.3f}s: {new_text}")
+            # Update raw editor (rebuild .ass)
+            self._rebuild_ass_from_list()
+
+    def _rebuild_ass_from_list(self):
+        if not hasattr(self, 'current_edit_ass_path'):
+            return
+        try:
+            import pysubs2
+            subs = pysubs2.SSAFile()
+            for i in range(self.caption_list.count()):
+                item = self.caption_list.item(i)
+                line = item.data(Qt.UserRole)
+                subs.append(line)
+            # Save to raw editor
+            output = str(subs)
+            self.edit_ass_editor.setPlainText(output)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to rebuild .ass: {str(e)}")
+
+    def _save_edit_ass(self):
+        if not hasattr(self, 'current_edit_ass_path'):
+            QMessageBox.warning(self, "Error", "No .ass file loaded.")
+            return
+        try:
+            content = self.edit_ass_editor.toPlainText()
+            with open(self.current_edit_ass_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            self.status.showMessage(f"Saved .ass: {self.current_edit_ass_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to save: {str(e)}")
+
+    def _load_ass_for_edit(self, ass_path: str):
+        """Load .ass into editor and list; enable controls and build preview."""
+        self.current_ass_path = Path(ass_path)
+        try:
+            text = self.current_ass_path.read_text(encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read ASS:\n{e}")
+            return
+
+        # Track pristine buffer for 'Revert'
+        self._ass_original_text = text
+        self._ass_dirty = False
+
+        # Populate raw editor
+        self.edit_ass_editor.blockSignals(True)
+        self.edit_ass_editor.setPlainText(text)
+        self.edit_ass_editor.blockSignals(False)
+        self.edit_ass_editor.setEnabled(True)
+
+        # Populate caption list from [Events] Dialogue lines (simple parse)
+        self._populate_caption_list_from_ass(text)
+
+        # Enable actions
+        self.save_btn.setEnabled(True)
+        self.revert_btn.setEnabled(True)
+        self.btn_refresh_preview.setEnabled(True)
+
+        # Render preview (first frame + ASS)
+        self._refresh_edit_preview()
+
+    def _populate_caption_list_from_ass(self, ass_text: str):
+        """Very basic ASS events parser: list each 'Dialogue:' line as an item."""
+        self.caption_list.clear()
+        lines = ass_text.splitlines()
+        for ln in lines:
+            if ln.lstrip().lower().startswith("dialogue:"):
+                # You can parse time/text more precisely if you need
+                # Example ASS event format starts with: Dialogue: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+                # We'll show the text part after the 9th comma as a quick preview
+                parts = ln.split(",", 9)
+                preview = parts[-1].strip() if len(parts) >= 10 else ln.strip()
+                item = QListWidgetItem(preview[:120])  # cap preview
+                item.setData(Qt.UserRole, ln)  # keep full line for editing reference
+                self.caption_list.addItem(item)
+
+    def _on_caption_row_changed(self, row: int):
+        """Optional: when selecting a caption, you could scroll to it in the raw editor."""
+        if row < 0:
+            return
+        item = self.caption_list.item(row)
+        if not item:
+            return
+        line = item.data(Qt.UserRole)
+        if not line:
+            return
+        # Find and select the line in the raw editor
+        cursor = self.edit_ass_editor.textCursor()
+        doc = self.edit_ass_editor.document()
+        it = doc.find(line)
+        if it.isNull():
+            return
+        self.edit_ass_editor.setTextCursor(it)
+        self.edit_ass_editor.setFocus()
+
+    def _on_ass_text_changed(self):
+        """Mark buffer dirty and (optionally) debounce preview refresh."""
+        self._ass_dirty = True
+        # You can debounce and auto-refresh preview; for now keep manual Refresh button.
+
+    def _save_edit_ass(self):
+        """Write back to the current ASS path."""
+        if not hasattr(self, "current_ass_path") or not self.current_ass_path:
+            QMessageBox.warning(self, "Warning", "No .ass file loaded.")
+            return
+        text = self.edit_ass_editor.toPlainText()
+        try:
+            self.current_ass_path.write_text(text, encoding="utf-8")
+            self._ass_original_text = text
+            self._ass_dirty = False
+            # Rebuild list in case structure changed
+            self._populate_caption_list_from_ass(text)
+            QMessageBox.information(self, "Saved", f"Saved:\n{self.current_ass_path.name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save:\n{e}")
+
+    def _revert_edit_ass(self):
+        if not hasattr(self, "_ass_original_text"):
+            return
+        self.edit_ass_editor.blockSignals(True)
+        self.edit_ass_editor.setPlainText(self._ass_original_text)
+        self.edit_ass_editor.blockSignals(False)
+        self._ass_dirty = False
+        self._populate_caption_list_from_ass(self._ass_original_text)
+
+
+    def _refresh_edit_preview(self):
+        """Refresh the preview to show only the first frame of the current video."""
+        if not hasattr(self, "edit_preview_view"):
+            return
+
+        video_path = getattr(self, "current_video_path", None)
+        if not video_path:
+            self.edit_preview_view.setPixmap(QPixmap())
+            self.edit_preview_view.setText("No video")
+            return
+
+        pix = grab_first_frame(video_path)
+        if not pix or pix.isNull():
+            self.edit_preview_view.setPixmap(QPixmap())
+            self.edit_preview_view.setText("Preview unavailable")
+            return
+
+        # Scale to fit the preview label
+        scaled = pix.scaled(
+            self.edit_preview_view.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        self.edit_preview_view.setPixmap(scaled)
+        self.edit_preview_view.setText("")
 
 def main():
     app = QApplication(sys.argv)
