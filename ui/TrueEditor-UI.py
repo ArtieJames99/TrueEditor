@@ -1858,11 +1858,9 @@ class TrueEditor(QMainWindow):
     ''' 
     TODO:  
     IMPORTANT: vocal isolation and Music, when using UI do not function correctly.
-    - Clear .ass files from cache when directed (ask to clear yes or no)  
-    - Update model selection for Vocal Isolation
-    - Update language selection to match openai-whisper functionality eg:tagalog = tl
+    - Add Import Folder Option
+    - Project Naming Function (make so nests under a folder with project name)
     - Add Save/Load  Preset Functionality
-    - Update Captions Tab so it doesn't get so big when it is toggeled on. 
     - 3-4 Common Presets that they can select within, then give the ability to load presets later
     '''
     def _toggle_section_header(self, title: str, subtitle: str, toggle: ToggleSwitch) -> QWidget:
@@ -2145,7 +2143,7 @@ class TrueEditor(QMainWindow):
         lang_row.addWidget(QLabel('Language'))
 
         self.language_style_combo = QComboBox()
-        self.caption_language_combo.addItems([
+        self.language_style_combo.addItems([
             'Auto', 'English', 'Spanish', 'Chinese', 'French', 'German', 'Italian',
             'Tagalog', 'Hindi', 'Arabic', 'Portuguese', 'Russian', 'Japanese',
             'Korean', 'Vietnamese', 'Thai', 'Indonesian', 'Dutch', 'Polish',
