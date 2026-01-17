@@ -26,11 +26,59 @@ def normalize_platform(platform_str: str) -> str:
 
 
 def normalize_language(language_str: str) -> Optional[str]:
-    """Convert UI language names to backend format."""
-    if language_str.lower() == 'auto':
-        return None
-    return language_str
-
+    """Convert UI language names to Whisper language codes."""
+    language_map = {
+        'auto': None,
+        'english': 'en',
+        'spanish': 'es',
+        'chinese': 'zh',
+        'french': 'fr',
+        'german': 'de',
+        'italian': 'it',
+        'tagalog': 'tl',
+        'hindi': 'hi',
+        'arabic': 'ar',
+        'portuguese': 'pt',
+        'russian': 'ru',
+        'japanese': 'ja',
+        'korean': 'ko',
+        'vietnamese': 'vi',
+        'thai': 'th',
+        'indonesian': 'id',
+        'dutch': 'nl',
+        'polish': 'pl',
+        'turkish': 'tr',
+        'hebrew': 'he',
+        'swahili': 'sw',
+        'malay': 'ms',
+        'bengali': 'bn',
+        'punjabi': 'pa',
+        'javanese': 'jv',
+        'tamil': 'ta',
+        'telugu': 'te',
+        'marathi': 'mr',
+        'urdu': 'ur',
+        'persian': 'fa',
+        'ukrainian': 'uk',
+        'greek': 'el',
+        'czech': 'cs',
+        'hungarian': 'hu',
+        'swedish': 'sv',
+        'finnish': 'fi',
+        'danish': 'da',
+        'norwegian': 'no',
+        'romanian': 'ro',
+        'bulgarian': 'bg',
+        'serbian': 'sr',
+        'croatian': 'hr',
+        'slovak': 'sk',
+        'slovenian': 'sl',
+        'lithuanian': 'lt',
+        'latvian': 'lv',
+        'estonian': 'et',
+        'filipino': 'fil',
+    }
+    return language_map.get(language_str.lower(), language_str.lower())
 
 def cleanup_level_to_string(cleanup_str: str) -> str:
     """Ensure cleanup level is in correct format."""
@@ -166,7 +214,7 @@ def pipeline_runner(
             build_video(
                 video_path=video_path,
                 end_card_path=end_card_path_to_use,
-                model_name="small",  # TODO: make this configurable from UI
+                model_name=caption_style.get('model_name', 'small'),
                 language=language_code,
                 cleanup_level=cleanup_level,
                 music_path=music_path,

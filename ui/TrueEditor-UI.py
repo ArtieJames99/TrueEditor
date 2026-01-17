@@ -1966,9 +1966,16 @@ class TrueEditor(QMainWindow):
         caption_config_layout.addRow(separator_home_caption)
 
         self.caption_language_combo = QComboBox()
-        self.caption_language_combo.addItems(
-            ['Auto', 'English', 'Spanish', 'Chinese', 'French', 'German', 'Italian']
-        )
+        self.caption_language_combo.addItems([
+            'Auto', 'English', 'Spanish', 'Chinese', 'French', 'German', 'Italian',
+            'Tagalog', 'Hindi', 'Arabic', 'Portuguese', 'Russian', 'Japanese',
+            'Korean', 'Vietnamese', 'Thai', 'Indonesian', 'Dutch', 'Polish',
+            'Turkish', 'Hebrew', 'Swahili', 'Malay', 'Bengali', 'Punjabi',
+            'Javanese', 'Tamil', 'Telugu', 'Marathi', 'Urdu', 'Persian',
+            'Ukrainian', 'Greek', 'Czech', 'Hungarian', 'Swedish', 'Finnish',
+            'Danish', 'Norwegian', 'Romanian', 'Bulgarian', 'Serbian', 'Croatian',
+            'Slovak', 'Slovenian', 'Lithuanian', 'Latvian', 'Estonian', 'Filipino'
+        ])
         caption_config_layout.addRow('Language', self.caption_language_combo)
 
         quick_start_box_layout.addRow(captions_header)
@@ -2138,7 +2145,16 @@ class TrueEditor(QMainWindow):
         lang_row.addWidget(QLabel('Language'))
 
         self.language_style_combo = QComboBox()
-        self.language_style_combo.addItems(['Auto', 'English', 'Spanish', 'Chinese'])
+        self.caption_language_combo.addItems([
+            'Auto', 'English', 'Spanish', 'Chinese', 'French', 'German', 'Italian',
+            'Tagalog', 'Hindi', 'Arabic', 'Portuguese', 'Russian', 'Japanese',
+            'Korean', 'Vietnamese', 'Thai', 'Indonesian', 'Dutch', 'Polish',
+            'Turkish', 'Hebrew', 'Swahili', 'Malay', 'Bengali', 'Punjabi',
+            'Javanese', 'Tamil', 'Telugu', 'Marathi', 'Urdu', 'Persian',
+            'Ukrainian', 'Greek', 'Czech', 'Hungarian', 'Swedish', 'Finnish',
+            'Danish', 'Norwegian', 'Romanian', 'Bulgarian', 'Serbian', 'Croatian',
+            'Slovak', 'Slovenian', 'Lithuanian', 'Latvian', 'Estonian', 'Filipino'
+        ])
         lang_row.addWidget(self.language_style_combo)
 
         caption_controls_layout.addLayout(lang_row)
@@ -3010,6 +3026,10 @@ class TrueEditor(QMainWindow):
         self.run_batch_btn = QPushButton('Run Batch')
         self.btn_stop = QPushButton('Stop')
         self.btn_stop.setEnabled(False)
+        user_row = QHBoxLayout()
+        self.run_clear_transcriptions_btn = QPushButton('Clear Transcriptions')
+        self.run_clear_transcriptions_btn.clicked.connect(self._clear_transcriptions)
+
         self.open_output_btn = QPushButton('Open output Folder')
         self.open_output_btn.clicked.connect(self._open_output_folder)
         
@@ -3017,8 +3037,10 @@ class TrueEditor(QMainWindow):
         control_row.addWidget(self.run_test_btn)
         control_row.addWidget(self.run_batch_btn)
         control_row.addWidget(self.btn_stop)
+        user_row.addWidget(self.run_clear_transcriptions_btn)
+        user_row.addWidget(self.open_output_btn)
         btns.addLayout(control_row)
-        btns.addWidget(self.open_output_btn)
+        btns.addLayout(user_row)
         layout.addLayout(btns)
 
         # Connect buttons to backend hooks (pipeline)
@@ -3085,6 +3107,35 @@ class TrueEditor(QMainWindow):
             self.brand_video_btn.setToolTip(path)
             # Update preview with video frame
             self._update_branding_preview_from_video(path)
+    
+
+    def _clear_transcriptions(self):
+        """Clear all saved transcriptions after confirmation."""
+        reply = QMessageBox.question(
+            self, 'Clear Transcriptions',
+            'Are you sure you want to clear all saved transcriptions? This action cannot be undone.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                # Ensure the transcriptions directory exists
+                self._ensure_transcriptions_dir()
+                
+                # Delete all .ass files in the transcriptions directory
+                for ass_file in self.transcriptions_dir.glob('*.ass'):
+                    ass_file.unlink()
+                
+                QMessageBox.information(
+                    self, 'Transcriptions Cleared',
+                    'All saved transcriptions have been successfully cleared.'
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    self, 'Error',
+                    f'Failed to clear transcriptions: {str(e)}'
+                )
+    
+
     
     def _select_end_card(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -3334,6 +3385,7 @@ class TrueEditor(QMainWindow):
             },
             'length_mode': self._get_length_mode(),
             'enabled': self.captions_toggle.isChecked(),
+            'model_name': self.ai_model_combo.currentText().lower(),
         }
 
     def _get_length_mode(self) -> str:
