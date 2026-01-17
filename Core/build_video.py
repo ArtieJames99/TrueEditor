@@ -60,10 +60,11 @@ def build_video(
     captions_enabled: bool = True,
     output_folder: str = "../final/edited_videos",
     caption_position: Optional[Dict[str, float]] = None,
-    watermark_path: Optional[Path] = None,  # Add watermark parameter
-    watermark_position: Optional[Dict[str, float]] = None,  # Add watermark position
-    watermark_opacity: float = 0.5,  # Add watermark opacity
-    watermark_size: float = 15.0,  # Add watermark size
+    watermark_path: Optional[Path] = None,  
+    watermark_position: Optional[Dict[str, float]] = None,  
+    watermark_opacity: float = 0.5, 
+    watermark_size: float = 15.0,  
+    target_lufs: float = -14.0
 ) -> None:
     """
     Full TrueEdits video build pipeline:
@@ -200,9 +201,16 @@ def build_video(
             log_message("ERROR", str(e))
     else:
         # Captions disabled → just copy the original video
-        log_message("INFO", "Captions disabled. - Skipping Burn")
-        import shutil
-        shutil.copy(video_path, temp_captioned)
+        log_message("INFO", "Captions disabled. - Copying video")
+        cmd_copy = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-i", str(video_path),
+            "-c", "copy",
+            "-movflags", "+faststart",
+            str(temp_captioned),
+        ]
+        subprocess.run(cmd_copy, check=True)
 
     # --------------------------------------------------
     # Add Watermark
@@ -315,10 +323,13 @@ def build_video(
             end_card_path = auto_endcard
 
     if end_card_path and end_card_path.exists():
-        log_message("INFO", "Concatenating end card...")
         concat_videos(timeline_input, end_card_path, temp_timeline)
+        timeline_input = temp_timeline
     else:
+        temp_timeline.unlink(missing_ok=True)
         timeline_input.rename(temp_timeline)
+        timeline_input = temp_timeline
+
 
     timeline_stem = temp_timeline.stem
 
@@ -327,67 +338,75 @@ def build_video(
     # --------------------------------------------------
 
     audio_features_enabled = (
-    voice_isolation_enabled or
-    music_path is not None or 
-    normalize_audio is not None or
-    cleanup_level in ("light", "full")
+        voice_isolation_enabled or
+        music_path is not None or 
+        normalize_audio is not None or
+        cleanup_level in ("light", "full")
     )
 
+    temp_isolated = None
     if audio_features_enabled:
-        log_message("INFO", "Processing final audio over full timeline...")
+        log_message("INFO", "Processing audio...")
 
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-        audio_source = None
-        is_isolated = False
-
-        # 1. Voice isolation
+        # Step 1: Voice isolation (replace audio with isolated)
         if voice_isolation_enabled:
-            log_message("INFO", f"Running voice isolation on {temp_timeline.name}...")
-            processed_audio = process_voice_isolation(temp_timeline, TEMP_DIR)
+            log_message("INFO", f"Running voice isolation on {timeline_input.name}...")
+            isolated_audio_path = process_voice_isolation(timeline_input, TEMP_DIR)
 
-            if processed_audio and processed_audio.exists():
-                log_message("INFO", f"Voice isolation complete: {processed_audio}")
-                audio_source = processed_audio
-                is_isolated = True
+            if isolated_audio_path and isolated_audio_path.exists():
+                log_message("INFO", f"Voice isolation complete: {isolated_audio_path}")
+
+                # Normalize isolated audio
+                norm_isolated = TEMP_DIR / f"{timeline_input.stem}_isolated_norm.wav"
+                normalize_audio(isolated_audio_path, norm_isolated)
+                isolated_audio_path = norm_isolated
+
+                # Process audio to replace with isolated (no music yet)
+                temp_isolated = edited_videos_dir / f"{video_path.stem}_isolated.mp4"
+                process_audio(
+                    video_in=timeline_input,
+                    video_out=temp_isolated,
+                    music_path=None,
+                    music_volume=music_volume,
+                    cleanup_level=cleanup_level,
+                    platform=platform,
+                    isolated_audio=isolated_audio_path,
+                    normalize=True,
+                    target_lufs=target_lufs
+                )
+                timeline_input = temp_isolated
+                log_message("INFO", f"Isolated video created: {temp_isolated}")
             else:
-                log_message("WARN", "Voice isolation failed, using raw audio.")
+                log_message("WARN", "Voice isolation failed, proceeding with original audio.")
 
-        # 2. Extract raw audio if needed
-        if not audio_source:
-            raw_audio = TEMP_DIR / f"{temp_timeline.stem}_raw.wav"
-            log_message("INFO", "Extracting raw timeline audio...")
-            extract_audio(temp_timeline, raw_audio)
-            audio_source = raw_audio
-
-        # 3. Normalize
-        log_message("INFO", "Normalizing audio loudness (LUFS)...")
-        norm_audio_tmp = TEMP_DIR / f"{temp_timeline.stem}_norm.wav"
-        normalize_audio(audio_source, norm_audio_tmp)
-        audio_source = norm_audio_tmp
-
-        # 4. Cleanup level adjustments
-        if is_isolated:
-            log_message("INFO", "Reducing cleanup level due to voice isolation.")
-            cleanup_level = "light"
-
-        # 5. Final audio processing
-        process_audio(
-            video_in=temp_timeline,
-            video_out=final_output,
-            cleanup_level=cleanup_level,
-            music_path=music_path,
-            music_volume=music_volume,
-            platform=platform,
-            isolated_audio=audio_source,
-        )
+        # Step 2: Add music (to the now possibly isolated video)
+        if music_path:
+            log_message("INFO", f"Adding background music to {timeline_input.name}...")
+            process_audio(
+                video_in=timeline_input,
+                video_out=final_output,
+                music_path=music_path,
+                music_volume=music_volume,
+                cleanup_level="off",  # Cleanup already applied if isolated
+                platform=platform,
+                isolated_audio=None,  # Use audio from video_in
+                normalize=True,
+                target_lufs=target_lufs
+            )
+        else:
+            # No music, just copy to final output
+            if timeline_input != final_output:
+                import shutil
+                shutil.copy(timeline_input, final_output)
 
     else:
         # No audio features → skip audio processing entirely
         log_message("INFO", "Skipping audio processing (no audio features enabled).")
         # Just copy the timeline video to final output
         import shutil
-        shutil.copy(temp_timeline, final_output)
+        shutil.copy(timeline_input, final_output)
 
     # --------------------------------------------------
     # CLEANUP TEMP FILES
@@ -400,6 +419,8 @@ def build_video(
 
     temp_captioned.unlink(missing_ok=True)
     temp_timeline.unlink(missing_ok=True)
+    if temp_isolated and temp_isolated.exists():
+        temp_isolated.unlink(missing_ok=True)
 
     log_message("INFO", "=== Build complete ===")
     log_message("INFO", f"Final output: {final_output}")
