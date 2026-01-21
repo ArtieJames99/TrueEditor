@@ -64,7 +64,8 @@ def build_video(
     watermark_position: Optional[Dict[str, float]] = None,  
     watermark_opacity: float = 0.5, 
     watermark_size: float = 15.0,  
-    target_lufs: float = -14.0
+    target_lufs: float = -14.0,
+    ass_path: Optional[Path] = None,
 ) -> None:
     """
     Full TrueEdits video build pipeline:
@@ -107,82 +108,68 @@ def build_video(
     temp_timeline = edited_videos_dir / f"{video_path.stem}_timeline.mp4"
     final_output = edited_videos_dir / f"{video_path.stem}_Edited.mp4"
 
-    # --------------------------------------------------
+
+    # ------------------------------------------------
     # Generate captions
-    # --------------------------------------------------
-
-    # Generate captions with position data
-    ass_path = SCRIPT_DIR.parent / "final" / "transcriptions" / f"{video_path.stem}.ass"
-    if not ass_path.exists():
-        if captions_enabled:
-            log_message("INFO", "Generating captions...")
-            # Pass position data to captioner
-            captioner.mp4_to_ass(
-                video_path, 
-                model_name=model_name, 
-                language=language,
-                position=caption_position  # Pass position data
-            )
-        else:
-            log_message("INFO", "Captions disabled. - Skipping Generation")
-
-    # Wait for ASS file
-    if captions_enabled:
-        log_message("INFO", "Waiting for ASS file...")
-        max_wait = 500
-        elapsed = 0.0
-        while not ass_path.exists() and elapsed < max_wait:
-            time.sleep(0.5)
-            elapsed += 0.5
+    # ------------------------------------------------
+    if ass_path is not None:
+        ass_path = Path(ass_path)
         if not ass_path.exists():
-            raise FileNotFoundError(f"ASS file not created: {ass_path}")
+            raise FileNotFoundError(f"Provided ASS not found: {ass_path}")
+        log_message("INFO", f"Using provided ASS: {ass_path.name}")
     else:
-        log_message("INFO", "Skipping caption file generation.")
+        ass_path = (SCRIPT_DIR.parent / "final" / "transcriptions" / f"{video_path.stem}.ass").resolve()
+        if not ass_path.exists():
+            if captions_enabled:
+                log_message("INFO", "Generating captions...")
+                captioner.mp4_to_ass(
+                    video_path,
+                    model_name=model_name,
+                    language=language,
+                    position=caption_position
+                )
+            else:
+                log_message("INFO", "Captions disabled. - Skipping Generation")
 
+        # Wait for caption file if we were supposed to have one
+        if captions_enabled:
+            log_message("INFO", "Waiting for ASS file...")
+            max_wait = 500
+            elapsed = 0.0
+            while not ass_path.exists() and elapsed < max_wait:
+                time.sleep(0.5); elapsed += 0.5
+            if not ass_path.exists():
+                raise FileNotFoundError(f"ASS file not created: {ass_path}")
+        else:
+            log_message("INFO", "Skipping caption file generation.")
+
+
+    log_message("INFO", f"Burning captions with file: {ass_path}")
 # --------------------------------------------------
 # Burn captions
 # --------------------------------------------------
     timeline_input = temp_captioned
     if captions_enabled:
-        playresx = None
-        playresy = None
-
+        playresx = playresy = None
         try:
             with open(ass_path, "r", encoding="utf-8") as f:
-                      lines = f.readlines()
-            
-            for line in lines:
-                if line.startswith("PlayResX:"):
-                    playresx = int(line.split(":")[1].strip())
-                if line.startswith("PlayResY:"):
-                    playresy = int(line.split(":")[1].strip())
+                for line in f:
+                    if line.startswith("PlayResX:"):
+                        playresx = int(line.split(":")[1].strip())
+                    elif line.startswith("PlayResY:"):
+                        playresy = int(line.split(":")[1].strip())
         except Exception as e:
             log_message("WARN", f"Failed to read ASS resolution: {e}")
 
         ass_path_fixed = ass_path.as_posix().replace(":", r"\:")
-        ass_filter = f"subtitles='{ass_path_fixed}:original_size={playresx}x{playresy}'"
-
-        # Optional: read PlayResX/Y from ASS
-        try:
-            with open(ass_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            playresx = playresy = None
-            for line in lines:
-                if line.startswith("PlayResX:"):
-                    playresx = int(line.split(":")[1].strip())
-                if line.startswith("PlayResY:"):
-                    playresy = int(line.split(":")[1].strip())
-            if playresx and playresy:
-                ass_filter += f":original_size={playresx}x{playresy}"
-            # If PlayResX/Y missing, just skip original_size
-        except Exception as e:
-            log_message("WARN", f"Failed to read ASS resolution: {e}")
+        if playresx and playresy:
+            ass_filter = f"subtitles='{ass_path_fixed}:original_size={playresx}x{playresy}'"
+        else:
+            ass_filter = f"subtitles='{ass_path_fixed}'"
 
         cmd_burn = [
-            str(FFMPEG_EXE),
-            "-y",
-            "-i",
-            str(video_path),
+            str(FFMPEG_EXE), "-y",
+            "-i", str(video_path),
             "-vf", ass_filter,
             "-map", "0:v",
             "-map", "0:a?",
@@ -190,10 +177,8 @@ def build_video(
             "-c:a", "copy",
             str(temp_captioned),
         ]
-
         log_message("INFO", "Burning captions...")
         log_message("DEBUG", "FFMPEG CMD: " + " ".join(cmd_burn))
-
         try:
             subprocess.run(cmd_burn, check=True)
         except subprocess.CalledProcessError as e:
@@ -202,15 +187,9 @@ def build_video(
     else:
         # Captions disabled → just copy the original video
         log_message("INFO", "Captions disabled. - Copying video")
-        cmd_copy = [
-            str(FFMPEG_EXE),
-            "-y",
-            "-i", str(video_path),
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(temp_captioned),
-        ]
+        cmd_copy = [str(FFMPEG_EXE), "-y", "-i", str(video_path), "-c", "copy", "-movflags", "+faststart", str(temp_captioned)]
         subprocess.run(cmd_copy, check=True)
+
 
     # --------------------------------------------------
     # Add Watermark
@@ -309,6 +288,7 @@ def build_video(
             log_message("ERROR", f"Failed to add watermark: {e}")
             raise
 
+    timeline_stem = temp_captioned.stem  # default 
     # --------------------------------------------------
     # Append end card
     # --------------------------------------------------

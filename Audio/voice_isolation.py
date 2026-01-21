@@ -33,6 +33,7 @@ def get_df_model():
         DF_MODEL, DF_STATE, _ = init_df()
         print("[DEBUG] DeepFilterNet initialized successfully.")
     return DF_MODEL, DF_STATE
+    
 
 # --------------------------------------------------
 # Helper: run FFmpeg
@@ -146,7 +147,7 @@ def prenormalize_audio(input_wav: Path, output_wav: Path, target_lufs=-20):
     cmd = [
         str(FFMPEG_EXE), "-y",
         "-i", str(input_wav),
-        "-af", f"loudnorm=I={target_lufs}:LRA=7:TP=-3",
+        "-af", "highpass=f=100,loudnorm=I=-16:TP=-1.5:LRA=11",
         str(output_wav),
     ]
     run_ffmpeg(cmd)
@@ -161,7 +162,7 @@ def apply_noise_gate(input_wav: Path, output_wav: Path):
     cmd = [
         str(FFMPEG_EXE), "-y",
         "-i", str(input_wav),
-        "-af", "agate=threshold=-45dB:ratio=2:attack=5:release=120",
+        "-af", "agate=threshold=-45dB:ratio=1.5:knee=6:attack=50:release=300",
         str(output_wav),
     ]
     run_ffmpeg(cmd)
@@ -179,8 +180,12 @@ def isolate_voice(input_wav: Path, output_wav: Path):
     temp_wav = output_wav.parent / f"{output_wav.stem}_flt.wav"
 
     run_ffmpeg([
-        str(FFMPEG_EXE), "-y", "-i", str(input_wav),
-        "-ac", "1", "-ar", "48000", "-c:a", "pcm_f32le",
+        str(FFMPEG_EXE), "-y",
+        "-i", str(input_wav),
+        "-ac", "1",              # mono
+        "-ar", "48000",          # 48 kHz (DF training domain)
+        "-c:a", "pcm_f32le",     # float32 for torch
+
         str(temp_wav)
     ])
 
@@ -189,7 +194,7 @@ def isolate_voice(input_wav: Path, output_wav: Path):
     waveform = torch.from_numpy(audio).unsqueeze(0)
 
     try:
-        enhanced = enhance(DF_MODEL, DF_STATE, waveform, sr)
+        enhanced = enhance(DF_MODEL, DF_STATE, waveform, sr, atten_lim_db=-30)
         enhanced_np = np.clip(enhanced.squeeze(0).numpy(), -1.0, 1.0)
         wavfile.write(str(output_wav), sr, enhanced_np.astype(np.float32))
     except Exception as e:

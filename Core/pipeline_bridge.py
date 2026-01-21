@@ -10,6 +10,7 @@ Bridges the gap between UI (TrueEditor-UI.py) and backend (Core/build_video.py).
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 from Core.build_video import build_video
+from Captions.captioner import get_video_resolution, mp4_to_ass, style_from_ui
 
 
 def normalize_platform(platform_str: str) -> str:
@@ -190,7 +191,10 @@ def pipeline_runner(
                 failed += 1
                 continue
             
-            emit(int(5 + (idx - 1) / total_files * 90), f"[{idx}/{total_files}] Processing {video_path.name}...")
+            emit(13, f"INFO: captions_enabled={caption_style.get('enabled', True)} "
+                    f"voice_iso={voice_isolation_enabled} "
+                    f"music={'yes' if music_path else 'no'} "
+                    f"cleanup={cleanup_level}")
             
             # Determine end card from UI branding settings (if provided and enabled)
             end_card_path_to_use = None
@@ -204,13 +208,66 @@ def pipeline_runner(
                             p = Path(video_path_str)
                             if p.exists():
                                 end_card_path_to_use = p
-                                emit(int(5 + (idx - 1) / total_files * 90), f"[{idx}/{total_files}] Using end card: {p.name}")
+                                emit(int(5 + (idx - 1) / total_files * 90),
+                                    f"[{idx}/{total_files}] Using end card: {p.name}")
                             else:
-                                emit(int(5 + (idx - 1) / total_files * 90), f"[{idx}/{total_files}] End card path not found: {video_path_str}")
+                                emit(int(5 + (idx - 1) / total_files * 90),
+                                    f"[{idx}/{total_files}] End card path not found: {video_path_str}")
             except Exception as e:
-                emit(int(5 + (idx - 1) / total_files * 90), f"[{idx}/{total_files}] End card processing error: {e}")
+                emit(int(5 + (idx - 1) / total_files * 90),
+                    f"[{idx}/{total_files}] End card processing error: {e}")
+
+            
+            ass_path = None
+
+            existing_ass = (Path(output_folder).resolve().parent / "transcriptions" / f"{Path(video_file).stem}.ass")
+            caption_style['regenerate'] = False
+            use_existing = (caption_style['regenerate'] is False) and existing_ass.exists()
+
+
+            emit(12, f"INFO: transcriptions_dir={existing_ass.parent}")
+            emit(12, f"INFO: use_existing={use_existing}  exists={existing_ass.exists()}  ass={existing_ass.name}")
+
+            if use_existing:
+                ass_path = existing_ass
+                emit(18, "STAGE_UPDATE:transcription:active")
+                emit(19, f"INFO: Using existing captions: {existing_ass.name}")
+                emit(38, "STAGE_UPDATE:transcription:completed")
+                emit(40, "STAGE_UPDATE:captions:active")
+            else:
+                vw, vh = get_video_resolution(video_path)
+                preview_h = None
+                try:
+                    preview_h = int(caption_style.get('preview_canvas_height') or 0)
+                except Exception:
+                    preview_h = 0
+                if not preview_h:
+                    # Fallback if UI doesn't supply it yet; adjust to your actual preview widget height
+                    preview_h = 640
+
+                # Build AssStyle from UI dict and geometry, with Option B scaling
+                style_obj = style_from_ui(caption_style, vw, vh, preview_canvas_height=preview_h)
+                length_mode= caption_style.get('length_mode', 'line')
+                position   = caption_style.get('position', {'x': 0.5, 'y': 0.75})
+                model_name = (caption_style.get('model_name') or 'small').lower()
+
+                emit(18, "STAGE_UPDATE:transcription:active")
+                ass_path = mp4_to_ass(
+                    video_path,
+                    model_name=model_name,
+                    language=language_code,   # already normalized above
+                    style=style_obj,
+                    position=position,
+                    length_mode=length_mode
+                )
+                emit(38, "STAGE_UPDATE:transcription:completed")
+                emit(40, "STAGE_UPDATE:captions:active")
+
+
+
             
             # Call backend build_video with position data
+
             build_video(
                 video_path=video_path,
                 end_card_path=end_card_path_to_use,
@@ -222,8 +279,9 @@ def pipeline_runner(
                 platform=platform_code,
                 voice_isolation_enabled=voice_isolation_enabled,
                 captions_enabled=caption_style.get('enabled', True),
-                output_folder=str(output_folder),  # Pass the output folder
-                caption_position=caption_position,  # Pass position data
+                output_folder=str(output_folder),
+                caption_position=caption_style.get('position'), # build_video falls back
+                ass_path=ass_path                              
             )
             
             processed += 1

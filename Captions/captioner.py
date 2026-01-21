@@ -110,6 +110,71 @@ def split_words_into_captions(words, max_chars):
     flush()
     return captions
 
+
+def css_hex_to_ass(hex_color: str, alpha: int = 0) -> str:
+    """
+    Convert '#RRGGBB' to ASS '&HAA BB GG RR' (AA=alpha, 00=opaque, FF=transparent).
+    """
+    hex_color = (hex_color or '').strip()
+    if hex_color.startswith('#'):
+        hex_color = hex_color[1:]
+    if len(hex_color) != 6:
+        return "&H00FFFFFF"  # white fallback
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    a = max(0, min(255, alpha))
+    return f"&H{a:02X}{b:02X}{g:02X}{r:02X}"
+
+def style_from_ui(caption_style: dict, video_w: int, video_h: int, preview_canvas_height: int | None = None) -> AssStyle:
+    """
+    Build an AssStyle from the Captions tab dict.
+    If preview_canvas_height is provided, scale the UI font size (px) from the
+    UI preview canvas space into the ASS PlayRes (video) space:
+        ass_size = ui_size * (video_h / preview_canvas_height)
+    """
+    style = AssStyle.adaptive_for_video(video_w, video_h)
+
+    # --- Font family
+    style.font_name = caption_style.get('font', style.font_name)
+
+    fs = int(caption_style.get('size', style.font_size))
+    if preview_canvas_height and preview_canvas_height > 0:
+        scale_factor = video_h / float(preview_canvas_height)
+        fs = int(round(fs * scale_factor))
+
+    style.font_size = max(8, fs)
+
+    # --- Weight/slant
+    style.bold   = -1 if caption_style.get('bold') else 0
+    style.italic = -1 if caption_style.get('italic') else 0
+
+    # --- Colors
+    style.primary_color = css_hex_to_ass(caption_style.get('font_color', '#FFFFFF'), alpha=0)
+
+    # --- Drop shadow
+    if caption_style.get('drop_shadow'):
+        style.shadow = 6
+        style.outline = 0
+    else:
+        style.shadow = 0 
+
+    # --- Background box
+    bg = caption_style.get('background') or {}
+    if bg.get('enabled'):
+        ass_alpha = 255 - int(bg.get('opacity', 180))  # UI 0..255; ASS 00=opaque
+        style.back_color = css_hex_to_ass(bg.get('color', '#000000'), alpha=ass_alpha)
+        style.border_style = 3
+    else:
+        style.border_style = 1
+
+    # --- Alignment (only used if you don't force \anX in overrides)
+    align = (caption_style.get('align') or 'Center').lower()
+    style.alignment = 2 if align == 'center' else (1 if align == 'left' else 3)
+
+    return style
+
+
 def build_caption_segments(result, max_chars=20):
     padding = 0.08
     min_gap = 0.01
@@ -193,7 +258,7 @@ def get_video_resolution(video_path):
 
     # 4️⃣ Enforce vertical sanity (optional but recommended)
     if height < width:
-        width, height = height, width
+       width, height = height, width
 
     log_message(
         "DEBUG",
@@ -233,27 +298,31 @@ def save_ass(segments, out_path, video_path, style: AssStyle | None = None, posi
         # Create an adaptive style sized for this video
         style = AssStyle.adaptive_for_video(video_w, video_h)
 
-    # If the provided style was created for a different PlayRes, scale (existing logic)
+
+    # If the provided style was created for a different PlayRes, scale
     try:
         orig_w = int(style.play_res_x or 1920)
         orig_h = int(style.play_res_y or 1080)
     except Exception:
         orig_w, orig_h = 1920, 1080
 
-    if orig_w > 0 and orig_h > 0:
-        scale_x = video_w / orig_w
-        scale_y = video_h / orig_h
+    # NEW: skip scaling entirely when style already matches this video
+    if orig_w == video_w and orig_h == video_h:
+        pass
+    else:
+        if orig_w > 0 and orig_h > 0:
+            scale_x = video_w / orig_w
+            scale_y = video_h / orig_h
+            new_font = max(8, int(style.font_size * scale_y))
+            style.spacing = int(style.spacing * min(scale_x, scale_y))
+            max_font = max(8, int(video_h * 0.2))
+            style.font_size = min(new_font, max_font)
+            style.margin_l = max(0, int(style.margin_l * scale_x))
+            style.margin_r = max(0, int(style.margin_r * scale_x))
+            style.margin_v = max(0, int(style.margin_v * scale_y))
+            style.outline = max(0, int(style.outline * max(scale_x, scale_y)))
+            style.shadow  = max(0, int(style.shadow  * max(scale_x, scale_y)))
 
-        new_font = max(8, int(style.font_size * scale_y))
-        style.spacing = int(style.spacing * min(scale_x, scale_y))
-        max_font = max(8, int(video_h * 0.2))
-        style.font_size = min(new_font, max_font)
-
-        style.margin_l = max(0, int(style.margin_l * scale_x))
-        style.margin_r = max(0, int(style.margin_r * scale_x))
-        style.margin_v = max(0, int(style.margin_v * scale_y))
-        style.outline = max(0, int(style.outline * max(scale_x, scale_y)))
-        style.shadow = max(0, int(style.shadow * max(scale_x, scale_y)))
 
     # Ensure header PlayRes matches the actual video resolution and clamp margins
     style.play_res_x = video_w
@@ -283,19 +352,17 @@ def save_ass(segments, out_path, video_path, style: AssStyle | None = None, posi
         start = ass_time(seg["start"])
         end = ass_time(seg["end"])
 
-        # Escape the dialogue text (this will not escape our manual {\pos(...)} tag)
+        # Escape the dialogue text (this will not escape a manual {\pos(...)} tag)
         escaped_text = ass_escape(seg["text"])
 
-        # If position provided, prepend an override block with exact pixel position.
-        # This overrides style margins/alignment for this line and places the
-        # text origin according to the style's alignment (`\an`), which will
-        # usually be center (5) or the style default. Using \pos gives precise control.
+        # Matches the UI allignment
         if pos_px is not None and pos_py is not None:
-            # UI provides the caption center point; ensure ASS uses center anchor
-            # `\an5` forces the origin to the text center so \pos(x,y) maps to UI coords
-            text = f"{{\\an5\\pos({pos_px},{pos_py})}}{escaped_text}"
+            # Derive \an from UI alignment if provided in position; default 5
+            an = int(position.get('anchor', 5)) if isinstance(position, dict) else 5
+            text = f"{{\\an{an}\\pos({pos_px},{pos_py})}}{escaped_text}"
         else:
             text = escaped_text
+
 
         lines.append(
             f"Dialogue: 0,{start},{end},{style.name},,{int(style.margin_l)},{int(style.margin_r)},{int(style.margin_v)},,{text}"
@@ -385,7 +452,8 @@ def format_captions_by_mode(captions: list, mode: str) -> list:
 
 
 # Public API: transcribe MP4 and save ASS captions
-def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None, position=None):
+def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None, position=None, length_mode: str = 'line'):
+
     """Transcribe a video file and write an .ass captions file.
     Returns the path to the generated .ass file.
     """
@@ -418,14 +486,18 @@ def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | 
             transcribe_args["language"] = language.lower()
         result = model.transcribe(str(video_path), **transcribe_args)
         
+
     log_message("INFO", "Transcription complete")
-    
     log_message("INFO", "Building caption segments...")
     segments = build_caption_segments(result, max_chars=MAX_CHARS)
+
+    # NEW: apply the selected length mode from UI
+    segments = format_captions_by_mode(segments, mode=length_mode)
+
     log_message("INFO", f"Generated {len(segments)} caption segments")
-    
     log_message("INFO", "Saving ASS file...")
     ass_path = os.path.join(TRANSCRIPTIONS_DIR, f"{video_path.stem}.ass")
+
     
     # Apply custom position if provided (always ensure a style exists)
     if position:
