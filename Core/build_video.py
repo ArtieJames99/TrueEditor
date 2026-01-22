@@ -7,9 +7,14 @@ import subprocess
 from pathlib import Path
 import time
 import os
+import sys
 import main
 from datetime import datetime
 from typing import Optional, Dict
+
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+
 from Audio.audio_utils import normalize_audio
 from Audio import voice_isolation
 from Audio.voice_isolation import (
@@ -20,19 +25,17 @@ from Audio.voice_isolation import (
 )
 from Captions import captioner
 from Audio.audioController import process_audio
+from Core.path_utils import app_base_path
 import numpy as np
 from scipy.io import wavfile
 
 # --------------------------------------------------
 # Setup
 # --------------------------------------------------
+SCRIPT_DIR = app_base_path()
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
-os.chdir(SCRIPT_DIR)
-
-FFMPEG_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffmpeg.exe"
-FFPROBE_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffprobe.exe"
-
+FFMPEG_EXE = SCRIPT_DIR / "assets" / "ffmpeg" / "ffmpeg.exe"
+FFPROBE_EXE = SCRIPT_DIR / "assets" / "ffmpeg" / "ffprobe.exe"
 
 # --------------------------------------------------
 # Logging
@@ -180,7 +183,7 @@ def build_video(
         log_message("INFO", "Burning captions...")
         log_message("DEBUG", "FFMPEG CMD: " + " ".join(cmd_burn))
         try:
-            subprocess.run(cmd_burn, check=True)
+            subprocess.run(cmd_burn, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         except subprocess.CalledProcessError as e:
             log_message("ERROR", "FFmpeg failed to burn captions.")
             log_message("ERROR", str(e))
@@ -188,7 +191,7 @@ def build_video(
         # Captions disabled → just copy the original video
         log_message("INFO", "Captions disabled. - Copying video")
         cmd_copy = [str(FFMPEG_EXE), "-y", "-i", str(video_path), "-c", "copy", "-movflags", "+faststart", str(temp_captioned)]
-        subprocess.run(cmd_copy, check=True)
+        subprocess.run(cmd_copy, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
     # --------------------------------------------------
@@ -282,7 +285,7 @@ def build_video(
         log_message("DEBUG", "Watermark FFmpeg CMD: " + " ".join(cmd))
         
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
             log_message("INFO", f"Watermark added successfully: {output_video}")
         except subprocess.CalledProcessError as e:
             log_message("ERROR", f"Failed to add watermark: {e}")
@@ -441,7 +444,7 @@ def concat_videos(video1_path, video2_path, output_path):
         "-c:a", "aac",
         str(endcard_with_audio),
     ]
-    subprocess.run(cmd_add_audio, check=True)
+    subprocess.run(cmd_add_audio, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # 2. Scale end card to match main video resolution
     scaled_endcard = video2_path.parent / "endcard_scaled.mp4"
@@ -453,7 +456,7 @@ def concat_videos(video1_path, video2_path, output_path):
         "-c:a", "aac",
         str(scaled_endcard)
     ]
-    subprocess.run(cmd_scale, check=True)
+    subprocess.run(cmd_scale, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # 3. Concat timeline
     cmd_concat = [
@@ -467,7 +470,7 @@ def concat_videos(video1_path, video2_path, output_path):
         "-movflags", "+faststart",
         str(output_path),
     ]
-    subprocess.run(cmd_concat, check=True)
+    subprocess.run(cmd_concat, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # Cleanup
     video1_path.unlink(missing_ok=True)

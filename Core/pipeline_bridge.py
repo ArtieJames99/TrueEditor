@@ -9,6 +9,13 @@ Bridges the gap between UI (TrueEditor-UI.py) and backend (Core/build_video.py).
 
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
+import sys
+from pathlib import Path
+
+# Add the project root to sys.path to allow absolute imports
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+
 from Core.build_video import build_video
 from Captions.captioner import get_video_resolution, mp4_to_ass, style_from_ui
 

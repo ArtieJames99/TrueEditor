@@ -4,7 +4,6 @@ Licensed under the terms in the LICENSE file in the root of this repository.
 '''
 
 import os
-import torch
 from scipy.io import wavfile
 from df import enhance, init_df
 from pathlib import Path
@@ -41,7 +40,7 @@ def get_df_model():
 def run_ffmpeg(cmd):
     cmd = [str(c) for c in cmd]
     print(f"[DEBUG] Running FFmpeg: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode != 0:
         print("[ERROR] FFmpeg failed:")
         print(result.stderr)
@@ -93,7 +92,7 @@ def conform_isolated_to_video(
         "-ar", str(target_sr),
         "-c:a", "pcm_s16le",
         str(ref_wav)
-    ], check=True)
+    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # 2) Resample/upmix isolated to target
     iso_resamp = out_wav.parent / f"{out_wav.stem}_resamp.wav"
@@ -104,7 +103,7 @@ def conform_isolated_to_video(
         "-ar", str(target_sr),
         "-c:a", "pcm_s16le",
         str(iso_resamp)
-    ], check=True)
+    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # 3) Length match (pad/truncate)
     sr_ref, ref_data = wavfile.read(str(ref_wav))       # (N, 2)
@@ -171,6 +170,7 @@ def apply_noise_gate(input_wav: Path, output_wav: Path):
 # DeepFilterNet isolation (FLOAT OUTPUT — CHANGE #4)
 # --------------------------------------------------
 def isolate_voice(input_wav: Path, output_wav: Path):
+    import torch
     DF_MODEL, DF_STATE = get_df_model()
     if DF_MODEL is None or DF_STATE is None:
         print("[WARN] DeepFilterNet unavailable.")

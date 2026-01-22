@@ -28,7 +28,7 @@ if not FFMPEG_EXE.exists():
     raise FileNotFoundError(f"FFmpeg not found at {FFMPEG_EXE}")
 
 # Import Whisper after setting PATH
-import whisper
+
 
 # Max characters per caption  - Add in a way to select what kind of Captions you want (Single word, line mode, Noraml estimates)
 def max_chars_for_width(width: int) -> int:
@@ -234,7 +234,7 @@ def get_video_resolution(video_path):
         str(video_path)
     ]
 
-    data = json.loads(subprocess.check_output(cmd, text=True))
+    data = json.loads(subprocess.check_output(cmd, text=True, creationflags=subprocess.CREATE_NO_WINDOW))
     stream = data["streams"][0]
 
     width = int(stream["width"])
@@ -453,7 +453,7 @@ def format_captions_by_mode(captions: list, mode: str) -> list:
 
 # Public API: transcribe MP4 and save ASS captions
 def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None, position=None, length_mode: str = 'line'):
-
+    import whisper
     """Transcribe a video file and write an .ass captions file.
     Returns the path to the generated .ass file.
     """
@@ -573,7 +573,7 @@ def main(video_path, language=None):
     out_mov = video_path.parent / "en.mov"
     ass_path_ffmpeg = ass_path.replace("\\", "/")
     cmd = [FFMPEG_EXE, "-i", str(video_path), "-vf", f"ass='{ass_path_ffmpeg}'", str(out_mov)]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
     print(f"Video with captions saved to: {out_mov}")
 
 if __name__ == "__main__":
