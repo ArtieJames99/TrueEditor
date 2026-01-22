@@ -2079,12 +2079,15 @@ class TrueEditor(QMainWindow):
         self.video_list.itemSelectionChanged.connect(self._update_preview_to_selected)
         add_btn = QPushButton('Add Files')
         add_btn.clicked.connect(self._add_files)
+        folder_btn = QPushButton('Select Folder')
+        folder_btn.clicked.connect(self._add_folder)
         remove_btn = QPushButton('Remove Selected')
         remove_btn.clicked.connect(self._remove_selected)
         clear_btn = QPushButton('Clear List')
         clear_btn.clicked.connect(lambda: self.video_list.clear())
         input_layout.addWidget(self.video_list)
         input_layout.addWidget(add_btn)
+        input_layout.addWidget(folder_btn)
         input_layout.addWidget(remove_btn)
         input_layout.addWidget(clear_btn)
 
@@ -3079,6 +3082,31 @@ class TrueEditor(QMainWindow):
         self.lbl_videos.setText(f'Videos: {self.video_list.count()}')  
         # Select the last added and auto-update preview    # Select the last added and auto-update preview
         self.video_list.setCurrentRow(self.video_list.count() - 1)
+    
+    def _add_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Add Folder Containing Videos",
+            "",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not folder:
+            return
+        video_exts = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+        existing = {
+            self.video_list.item(i).text()
+            for i in range(self.video_list.count())
+        }
+        added = 0
+        for path in Path(folder).rglob("*"):
+            if path.suffix.lower() in video_exts:
+                path_str = str(path)
+                if path_str not in existing:
+                    self.video_list.addItem(path_str)
+                    added += 1
+        if added:
+            self.lbl_videos.setText(f"Videos: {self.video_list.count()}")
+            self.video_list.setCurrentRow(self.video_list.count() - 1)
 
 
     def _remove_selected(self):
