@@ -107,35 +107,22 @@ def pipeline_runner(
     audio_settings: Dict[str, Any],
     branding: Dict[str, Any],
     test: bool = False,
-    report: Optional[Callable[[int, str], None]] = None,
+    base_color_hex="#FFFFFF", 
+    karaoke_color_hex="#FF0000",
+    report: Optional[Callable[[int, str], None]] = None,  
 ) -> Dict[str, Any]:
     """
     Main pipeline orchestrator: processes video batch with progress reporting.
-    
-    Args:
-        files: List of video file paths
-        output_folder: Where to save edited videos
-        language: Language for captions (or 'Auto')
-        platform: Target platform ('YouTube', 'Instagram', etc.)
-        caption_style: Caption styling dict from UI
-        audio_settings: Audio settings dict from UI
-        branding: Branding settings dict from UI
-        test: If True, process only first video for testing
-        report: Callback function report(percent: int, message: str)
-    
-    Returns:
-        Dict with 'success': bool, 'processed': int, 'failed': int, 'errors': list
+    Ensures caption positions and karaoke tags are consistently applied.
     """
     
     def emit(percent: int, message: str):
-        """Safely emit progress reports."""
         if report:
             try:
                 report(percent, message)
             except Exception as e:
                 print(f"[WARN] Report callback failed: {e}")
-    
-    # Validation
+
     output_folder = Path(output_folder).resolve()
     if not output_folder.exists():
         try:
@@ -143,138 +130,94 @@ def pipeline_runner(
         except Exception as e:
             err = f"Failed to create output folder: {e}"
             emit(0, err)
-            return {
-                'success': False,
-                'processed': 0,
-                'failed': 0,
-                'errors': [err],
-            }
-    
+            return {'success': False, 'processed': 0, 'failed': 0, 'errors': [err]}
+
     if not files:
         err = "No video files provided"
         emit(0, err)
-        return {
-            'success': False,
-            'processed': 0,
-            'failed': 0,
-            'errors': [err],
-        }
-    
-    # Convert to test mode if requested
+        return {'success': False, 'processed': 0, 'failed': 0, 'errors': [err]}
+
     files_to_process = [files[0]] if test else files
     total_files = len(files_to_process)
-    
     emit(5, f"Starting pipeline: {total_files} video(s) to process")
-    
-    # Parse settings
+
     language_code = normalize_language(language)
     platform_code = normalize_platform(platform)
     cleanup_level = cleanup_level_to_string(audio_settings.get('cleanup_level', 'off'))
     music_volume = audio_settings.get('music_volume', 0.22)
     voice_isolation_enabled = audio_settings.get('voice_isolation', False)
-    
+
     music_path = None
     if audio_settings.get('background_music', {}).get('enabled'):
         music_file = audio_settings['background_music'].get('path', '')
         if music_file and Path(music_file).exists():
             music_path = Path(music_file)
-    
-    processed = 0
-    failed = 0
+
+    processed, failed = 0, 0
     errors = []
-    
-    # Extract position data from caption_style
-    caption_position = caption_style.get('position', None)
-    
-    # Process each video
+
+    # Extract caption position and fallback defaults
+    caption_position = caption_style.get('position') or {'x': 0.5, 'y': 0.75, 'anchor': 5}
+
     for idx, video_file in enumerate(files_to_process, start=1):
         try:
             video_path = Path(video_file).resolve()
-            
             if not video_path.exists():
-                error_msg = f"Video not found: {video_path}"
-                emit(int(5 + (idx / total_files) * 90), f"[{idx}/{total_files}] {error_msg}")
-                errors.append(error_msg)
+                msg = f"Video not found: {video_path}"
+                emit(int(5 + (idx / total_files) * 90), f"[{idx}/{total_files}] {msg}")
+                errors.append(msg)
                 failed += 1
                 continue
-            
-            emit(13, f"INFO: captions_enabled={caption_style.get('enabled', True)} "
-                    f"voice_iso={voice_isolation_enabled} "
-                    f"music={'yes' if music_path else 'no'} "
-                    f"cleanup={cleanup_level}")
-            
-            # Determine end card from UI branding settings (if provided and enabled)
+
+            # Determine end card
             end_card_path_to_use = None
-            try:
-                if branding and branding.get('enabled', False):
-                    btype = (branding.get('type') or '').strip().lower()
-                    # Only treat a provided branding video as an end-card when type is End Card
-                    if btype in ('end card', 'endcard', 'end_card'):
-                        video_path_str = branding.get('video_path', '') or ''
-                        if video_path_str:
-                            p = Path(video_path_str)
-                            if p.exists():
-                                end_card_path_to_use = p
-                                emit(int(5 + (idx - 1) / total_files * 90),
-                                    f"[{idx}/{total_files}] Using end card: {p.name}")
-                            else:
-                                emit(int(5 + (idx - 1) / total_files * 90),
-                                    f"[{idx}/{total_files}] End card path not found: {video_path_str}")
-            except Exception as e:
-                emit(int(5 + (idx - 1) / total_files * 90),
-                    f"[{idx}/{total_files}] End card processing error: {e}")
+            if branding.get('enabled') and (branding.get('type') or '').lower() in ('end card', 'endcard', 'end_card'):
+                b_video = Path(branding.get('video_path', '') or '').resolve()
+                if b_video.exists():
+                    end_card_path_to_use = b_video
+                if b_video.exists():
+                    end_card_path_to_use = b_video
+                    emit(int(5 + (idx-1)/total_files*90), f"[{idx}/{total_files}] Using end card: {b_video.name}")
 
-            
-            ass_path = None
-
-            existing_ass = (Path(output_folder).resolve().parent / "transcriptions" / f"{Path(video_file).stem}.ass")
-            caption_style['regenerate'] = False
-            use_existing = (caption_style['regenerate'] is False) and existing_ass.exists()
-
-
-            emit(12, f"INFO: transcriptions_dir={existing_ass.parent}")
-            emit(12, f"INFO: use_existing={use_existing}  exists={existing_ass.exists()}  ass={existing_ass.name}")
+            # Check if an existing ASS file can be reused
+            trans_dir = Path(output_folder).parent / "transcriptions"
+            trans_dir.mkdir(parents=True, exist_ok=True)
+            ass_file = trans_dir / f"{video_path.stem}.ass"
+            use_existing = not caption_style.get('regenerate', False) and ass_file.exists()
 
             if use_existing:
-                ass_path = existing_ass
+                ass_path = ass_file
                 emit(18, "STAGE_UPDATE:transcription:active")
-                emit(19, f"INFO: Using existing captions: {existing_ass.name}")
+                emit(19, f"Using existing captions: {ass_file.name}")
                 emit(38, "STAGE_UPDATE:transcription:completed")
-                emit(40, "STAGE_UPDATE:captions:active")
             else:
                 vw, vh = get_video_resolution(video_path)
-                preview_h = None
-                try:
-                    preview_h = int(caption_style.get('preview_canvas_height') or 0)
-                except Exception:
-                    preview_h = 0
-                if not preview_h:
-                    # Fallback if UI doesn't supply it yet; adjust to your actual preview widget height
-                    preview_h = 640
+                preview_h = int(caption_style.get('preview_canvas_height') or 640)
 
-                # Build AssStyle from UI dict and geometry, with Option B scaling
                 style_obj = style_from_ui(caption_style, vw, vh, preview_canvas_height=preview_h)
-                length_mode= caption_style.get('length_mode', 'line')
-                position   = caption_style.get('position', {'x': 0.5, 'y': 0.75})
+                length_mode = caption_style.get('length_mode', 'line')
                 model_name = (caption_style.get('model_name') or 'small').lower()
+                karaoke_settings = caption_style.get('karaoke', {})
 
                 emit(18, "STAGE_UPDATE:transcription:active")
                 ass_path = mp4_to_ass(
                     video_path,
                     model_name=model_name,
-                    language=language_code,   # already normalized above
+                    language=language_code,
                     style=style_obj,
-                    position=position,
-                    length_mode=length_mode
+                    position=caption_position,   # Ensures proper \pos and \an tags
+                    length_mode=length_mode,
+                    karaoke=karaoke_settings,
+                    base_color_hex=base_color_hex,
+                    karaoke_color_hex=karaoke_color_hex
                 )
+                ass_path = Path(ass_path).resolve()
                 emit(38, "STAGE_UPDATE:transcription:completed")
-                emit(40, "STAGE_UPDATE:captions:active")
 
+            if caption_style.get('enabled', True) and (ass_path is None or not ass_path.exists()):
+                raise RuntimeError(f"Caption generation failed: ASS file not created ({ass_path})")
 
-
-            
-            # Call backend build_video with position data
-
+            # Build final video
             build_video(
                 video_path=video_path,
                 end_card_path=end_card_path_to_use,
@@ -287,35 +230,26 @@ def pipeline_runner(
                 voice_isolation_enabled=voice_isolation_enabled,
                 captions_enabled=caption_style.get('enabled', True),
                 output_folder=str(output_folder),
-                caption_position=caption_style.get('position'), # build_video falls back
-                ass_path=ass_path                              
+                caption_position=caption_position,
+                ass_path=ass_path,
+                caption_style=caption_style
             )
-            
+
             processed += 1
             emit(int(5 + (idx / total_files) * 90), f"[{idx}/{total_files}] ✓ {video_path.name} complete")
-            
+
         except Exception as e:
-            error_msg = f"Error processing {Path(video_file).name}: {str(e)}"
-            emit(int(5 + (idx / total_files) * 90), f"[{idx}/{total_files}] ✗ {error_msg}")
-            errors.append(error_msg)
+            msg = f"Error processing {video_path.name}: {e}"
+            emit(int(5 + (idx / total_files) * 90), f"[{idx}/{total_files}] ✗ {msg}")
+            errors.append(msg)
             failed += 1
-    
+
     # Final report
     emit(95, f"Processed: {processed}/{total_files} videos successfully")
-    
-    if failed > 0:
-        emit(100, f"Batch complete with {failed} error(s). Check logs.")
-        success = False
-    else:
-        emit(100, "Batch complete! All videos processed successfully.")
-        success = True
-    
-    return {
-        'success': success,
-        'processed': processed,
-        'failed': failed,
-        'errors': errors,
-    }
+    success = failed == 0
+    emit(100, f"Batch complete{' with errors' if not success else '!'}")
+
+    return {'success': success, 'processed': processed, 'failed': failed, 'errors': errors}
 
 
 # Alias for UI connection

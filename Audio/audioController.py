@@ -38,7 +38,10 @@ def get_audio_delay(video_path):
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(video_path)
     ]
-    result = subprocess.check_output(cmd, text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    result = subprocess.check_output(cmd, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW).strip()
     try:
         return float(result)
     except:
@@ -210,4 +213,8 @@ def process_audio(
     ]
 
     log_message("DEBUG", " ".join(cmd))
-    subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    subprocess.run(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)

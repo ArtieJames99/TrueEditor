@@ -16,7 +16,7 @@ import subprocess
 SCRIPT_DIR = Path(__file__).parent
 FFMPEG_EXE = (SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffmpeg.exe").resolve()
 os.environ["PATH"] = str(FFMPEG_EXE.parent) + os.pathsep + os.environ.get("PATH", "")
-TEMP_DIR = (SCRIPT_DIR.parent / "final" / "temp_audio").resolve()
+TEMP_DIR = (SCRIPT_DIR.parent / "TrueEditor" / "temp_audio").resolve()
 
 os.environ["PATH"] = str(FFMPEG_EXE.parent) + os.pathsep + os.environ.get("PATH", "")
 
@@ -40,7 +40,10 @@ def get_df_model():
 def run_ffmpeg(cmd):
     cmd = [str(c) for c in cmd]
     print(f"[DEBUG] Running FFmpeg: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode != 0:
         print("[ERROR] FFmpeg failed:")
         print(result.stderr)
@@ -84,6 +87,9 @@ def conform_isolated_to_video(
 
     # 1) Extract reference audio (uniform SR/ch layout)
     ref_wav = out_wav.parent / f"{reference_video.stem}_ref.wav"
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
     subprocess.run([
         str(ffmpeg_exe), "-y",
         "-i", str(reference_video),
@@ -92,10 +98,13 @@ def conform_isolated_to_video(
         "-ar", str(target_sr),
         "-c:a", "pcm_s16le",
         str(ref_wav)
-    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    ], check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # 2) Resample/upmix isolated to target
     iso_resamp = out_wav.parent / f"{out_wav.stem}_resamp.wav"
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
     subprocess.run([
         str(ffmpeg_exe), "-y",
         "-i", str(isolated_wav),
@@ -103,7 +112,7 @@ def conform_isolated_to_video(
         "-ar", str(target_sr),
         "-c:a", "pcm_s16le",
         str(iso_resamp)
-    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    ], check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
 
     # 3) Length match (pad/truncate)
     sr_ref, ref_data = wavfile.read(str(ref_wav))       # (N, 2)

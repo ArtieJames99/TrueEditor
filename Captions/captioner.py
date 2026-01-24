@@ -43,7 +43,7 @@ try:
 except Exception:
     MAX_CHARS = 15
 
-TRANSCRIPTIONS_DIR = SCRIPT_DIR / ".." / "final" / "transcriptions"
+TRANSCRIPTIONS_DIR = SCRIPT_DIR / ".." / "TrueEditor" / "transcriptions"
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
 
 # === Logging Helper ===
@@ -154,7 +154,7 @@ def style_from_ui(caption_style: dict, video_w: int, video_h: int, preview_canva
 
     # --- Drop shadow
     if caption_style.get('drop_shadow'):
-        style.shadow = 6
+        style.shadow = 5
         style.outline = 0
     else:
         style.shadow = 0 
@@ -234,7 +234,10 @@ def get_video_resolution(video_path):
         str(video_path)
     ]
 
-    data = json.loads(subprocess.check_output(cmd, text=True, creationflags=subprocess.CREATE_NO_WINDOW))
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    data = json.loads(subprocess.check_output(cmd, text=True,  startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW))
     stream = data["streams"][0]
 
     width = int(stream["width"])
@@ -242,21 +245,21 @@ def get_video_resolution(video_path):
 
     rotation = 0
 
-    # 1️⃣ Primary source: stream tag
+    # 1️ Primary source: stream tag
     tags = stream.get("tags", {})
     if "rotate" in tags:
         rotation = int(tags["rotate"])
 
-    # 2️⃣ Fallback: display matrix
+    # 2️ Fallback: display matrix
     for side in stream.get("side_data_list", []):
         if side.get("side_data_type") == "Display Matrix":
             rotation = int(side.get("rotation", rotation))
 
-    # 3️⃣ Normalize to display orientation
+    # 3️ Normalize to display orientation
     if rotation in (90, 270, -90):
         width, height = height, width
 
-    # 4️⃣ Enforce vertical sanity (optional but recommended)
+    # 4️ Enforce vertical sanity (optional but recommended)
     if height < width:
        width, height = height, width
 
@@ -280,94 +283,182 @@ def ass_time(sec):
 def ass_escape(text):
     return text.replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n","\\N")
 
-def save_ass(segments, out_path, video_path, style: AssStyle | None = None, position: dict | None = None):
+
+def save_ass(
+    segments,
+    out_path,
+    video_path,
+    style: AssStyle | None = None,
+    position: dict | None = None,
+    karaoke: dict | None = None,
+    base_color_hex= "#FFFFFF",
+    karaoke_color_hex= "#FF0000",
+
+):
     """
     Save caption segments to an ASS file.
-    Styling is handled by AssStyle (GUI-editable).
-    If `position` is provided (dict with 'x' and 'y' normalized 0..1),
-    a per-dialogue ASS override `{\pos(px,py)}` will be prepended to each line
-    to enforce exact pixel placement in PlayRes coordinates.
+    - If karaoke['enabled'] is True: render single-word pulse using overlays, honoring UI colors.
+    - Otherwise: render normal lines in base (font) color.
     """
+    import os
+    import re
+    from Captions.captioner import get_video_resolution, ass_time, ass_escape, log_message
+
+    # ---- Helpers (local to this function) ----
+    def hex_to_ass_bbggrr(hex_rgb: str) -> str:
+        """
+        Convert "#RRGGBB" to ASS override color "&HBBGGRR&".
+        Example: "#FF0000" (red) -> "&H0000FF&"
+        """
+        h = (hex_rgb or "").strip().lstrip("#")
+        if len(h) != 6:
+            h = "FFFFFF"
+        rr, gg, bb = h[0:2], h[2:4], h[4:6]
+        return f"&H{bb}{gg}{rr}&"
+
+    # Alpha codes for ASS override
+    ALPHA_VISIBLE = "&H00&"  # opaque
+    ALPHA_HIDDEN  = "&HFF&"  # fully transparent
+
+    # Preserve spacing: split into tokens (words and spaces separately)
+    TOKEN_SPLIT_RE = re.compile(r"\S+|\s+")
+
+    def tokenize_with_spaces(text: str):
+        """Return a list of tokens preserving original whitespace."""
+        return TOKEN_SPLIT_RE.findall(text)
+
+    def extract_words(tokens):
+        """Return list of (word, token_index) for non-space tokens."""
+        words = []
+        for idx, tok in enumerate(tokens):
+            if tok.strip() != "":
+                words.append((tok, idx))
+        return words
+
+    def core_len(s: str) -> int:
+        """Weight for timing—letters/digits only (at least 1)."""
+        core = re.sub(r"[^0-9A-Za-z]+", "", s)
+        return max(1, len(core))
+
+    # Convert UI colors once
+    COLOR_BASE   = hex_to_ass_bbggrr(base_color_hex)       # Font Color
+    COLOR_KARAOK = hex_to_ass_bbggrr(karaoke_color_hex)    # Karaoke Color
+
+    # Prepare output directory
     out_dir = os.path.dirname(out_path) or "."
     os.makedirs(out_dir, exist_ok=True)
 
-    # Determine video resolution and ensure style exists
+    # Video resolution / style scaling
     video_w, video_h = get_video_resolution(video_path)
 
     if style is None:
-        # Create an adaptive style sized for this video
         style = AssStyle.adaptive_for_video(video_w, video_h)
 
+    orig_w = int(style.play_res_x or 1920)
+    orig_h = int(style.play_res_y or 1080)
+    if orig_w != video_w or orig_h != video_h:
+        scale_x = video_w / orig_w
+        scale_y = video_h / orig_h
+        style.font_size = max(8, min(int(style.font_size * scale_y), int(video_h * 0.2)))
+        style.spacing   = int(style.spacing * min(scale_x, scale_y))
+        style.margin_l  = max(0, int(style.margin_l * scale_x))
+        style.margin_r  = max(0, int(style.margin_r * scale_x))
+        style.margin_v  = max(0, int(style.margin_v * scale_y))
+        style.outline   = max(0, int(style.outline  * max(scale_x, scale_y)))
+        style.shadow    = max(0, int(style.shadow   * max(scale_x, scale_y)))
 
-    # If the provided style was created for a different PlayRes, scale
-    try:
-        orig_w = int(style.play_res_x or 1920)
-        orig_h = int(style.play_res_y or 1080)
-    except Exception:
-        orig_w, orig_h = 1920, 1080
-
-    # NEW: skip scaling entirely when style already matches this video
-    if orig_w == video_w and orig_h == video_h:
-        pass
-    else:
-        if orig_w > 0 and orig_h > 0:
-            scale_x = video_w / orig_w
-            scale_y = video_h / orig_h
-            new_font = max(8, int(style.font_size * scale_y))
-            style.spacing = int(style.spacing * min(scale_x, scale_y))
-            max_font = max(8, int(video_h * 0.2))
-            style.font_size = min(new_font, max_font)
-            style.margin_l = max(0, int(style.margin_l * scale_x))
-            style.margin_r = max(0, int(style.margin_r * scale_x))
-            style.margin_v = max(0, int(style.margin_v * scale_y))
-            style.outline = max(0, int(style.outline * max(scale_x, scale_y)))
-            style.shadow  = max(0, int(style.shadow  * max(scale_x, scale_y)))
-
-
-    # Ensure header PlayRes matches the actual video resolution and clamp margins
     style.play_res_x = video_w
     style.play_res_y = video_h
     style.clamp_margins(video_w, video_h)
 
-    # Build ASS header from style object
+    # Header
     lines = style.build_header()
-
-    # Events section
     lines += [
         "",
         "[Events]",
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-    # If position provided, precompute pixel coords from normalized values
-    pos_px = pos_py = None
-    if position:
-        x_norm = float(position.get('x', 0.5))
-        y_norm = float(position.get('y', 0.75))
-        # Convert normalized center (0..1) to PlayRes pixels
-        pos_px = int(round(x_norm * video_w))
-        pos_py = int(round(y_norm * video_h))
+    # Compute position override once (applied to all events)
+    an = int(position.get("anchor", 5)) if position else 5
+    pos_px = int(round(position.get("x", 0.5) * video_w)) if position else None
+    pos_py = int(round(position.get("y", 0.75) * video_h)) if position else None
+    pos_tag = f"\\an{an}\\pos({pos_px},{pos_py})" if pos_px is not None else ""
+
+    karaoke_enabled = karaoke.get("enabled", False) if karaoke else False
+
+    # ---- MAIN LOOP: build events per segment (bug fix: keep everything inside the loop) ----
+    MIN_S = 0.03  # minimum seconds per word (helps fast speech)
 
     for seg in segments:
-        start = ass_time(seg["start"])
-        end = ass_time(seg["end"])
+        seg_start = seg["start"]
+        seg_end   = seg["end"]
+        start = ass_time(seg_start)
+        end   = ass_time(seg_end)
 
-        # Escape the dialogue text (this will not escape a manual {\pos(...)} tag)
-        escaped_text = ass_escape(seg["text"])
+        raw_text = (seg.get("text") or "").strip()
+        escaped_full = ass_escape(raw_text)
 
-        # Matches the UI allignment
-        if pos_px is not None and pos_py is not None:
-            # Derive \an from UI alignment if provided in position; default 5
-            an = int(position.get('anchor', 5)) if isinstance(position, dict) else 5
-            text = f"{{\\an{an}\\pos({pos_px},{pos_py})}}{escaped_text}"
+        if karaoke_enabled and raw_text:
+            # 1) Base line (Layer 0): entire sentence in base (font) color
+            base_text = f"{{{pos_tag}\\alpha{ALPHA_VISIBLE}\\c{COLOR_BASE}}}{escaped_full}"
+            lines.append(
+                f"Dialogue: 0,{start},{end},{style.name},,"
+                f"{int(style.margin_l)},{int(style.margin_r)},{int(style.margin_v)},,{base_text}"
+            )
+
+            # 2) Overlays (Layer 1): one per word, only current word visible in Karaoke Color
+            tokens    = tokenize_with_spaces(raw_text)
+            word_list = extract_words(tokens)  # [(word, token_index), ...]
+
+            if not word_list:
+                # Edge case: all spaces (unlikely, but safe)
+                continue
+
+            total_duration = max(0.01, seg_end - seg_start)
+            lengths = [core_len(w) for (w, _) in word_list]
+            total_len = sum(lengths) or len(word_list)
+
+            durations = [(total_duration * L / total_len) for L in lengths]
+            durations = [max(MIN_S, d) for d in durations]
+            drift = total_duration - sum(durations)
+            if abs(drift) > 1e-6:
+                idx_longest = max(range(len(durations)), key=lambda i: durations[i])
+                durations[idx_longest] = max(MIN_S, durations[idx_longest] + drift)
+
+            cur_t = seg_start
+            for word_idx, d in enumerate(durations):
+                parts = [f"{{{pos_tag}}}"]  # include position/anchor
+                cur_word_counter = -1
+                for t in tokens:
+                    if t.strip() == "":
+                        # space token: hide in overlay (base line provides visible spacing)
+                        parts.append(f"{{\\alpha{ALPHA_HIDDEN}}}{ass_escape(t)}")
+                    else:
+                        cur_word_counter += 1
+                        if cur_word_counter == word_idx:
+                            # current word visible in Karaoke color
+                            parts.append(f"{{\\alpha{ALPHA_VISIBLE}\\c{COLOR_KARAOK}}}{ass_escape(t)}")
+                        else:
+                            # other words hidden
+                            parts.append(f"{{\\alpha{ALPHA_HIDDEN}}}{ass_escape(t)}")
+
+                overlay_text = "".join(parts)
+                lines.append(
+                    f"Dialogue: 1,{ass_time(cur_t)},{ass_time(cur_t + d)},{style.name},,"
+                    f"{int(style.margin_l)},{int(style.margin_r)},{int(style.margin_v)},,{overlay_text}"
+                )
+                cur_t += d
+
         else:
-            text = escaped_text
+            # Non-karaoke: one line in base (font) color
+            text = f"{{{pos_tag}\\alpha{ALPHA_VISIBLE}\\c{COLOR_BASE}}}{escaped_full}"
+            lines.append(
+                f"Dialogue: 0,{start},{end},{style.name},,"
+                f"{int(style.margin_l)},{int(style.margin_r)},{int(style.margin_v)},,{text}"
+            )
 
-
-        lines.append(
-            f"Dialogue: 0,{start},{end},{style.name},,{int(style.margin_l)},{int(style.margin_r)},{int(style.margin_v)},,{text}"
-        )
-
+    # Write file
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -452,7 +543,7 @@ def format_captions_by_mode(captions: list, mode: str) -> list:
 
 
 # Public API: transcribe MP4 and save ASS captions
-def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None, position=None, length_mode: str = 'line'):
+def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | None = None, position=None, length_mode: str = 'line', karaoke: dict | None = None, base_color_hex: str = "#FFFFFF", karaoke_color_hex: str = "#FF0000"):
     import whisper
     """Transcribe a video file and write an .ass captions file.
     Returns the path to the generated .ass file.
@@ -556,7 +647,7 @@ def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | 
         margin_v = int(video_h * max(0.02, min(0.45, (1.0 - y_norm) * 0.6)))
         style.margin_v = margin_v
     
-    save_ass(segments, ass_path, video_path, style=style, position=position)
+    save_ass(segments, ass_path, video_path, style=style, position=position, karaoke=karaoke, base_color_hex=base_color_hex, karaoke_color_hex=karaoke_color_hex)
     log_message("INFO", f"=== Transcription complete: {ass_path} ===")
     return ass_path
 
@@ -570,10 +661,13 @@ def main(video_path, language=None):
     ass_path = mp4_to_ass(video_path, language=language)
 
     # Merge captions into en.mov (CLI convenience)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
     out_mov = video_path.parent / "en.mov"
     ass_path_ffmpeg = ass_path.replace("\\", "/")
     cmd = [FFMPEG_EXE, "-i", str(video_path), "-vf", f"ass='{ass_path_ffmpeg}'", str(out_mov)]
-    subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    subprocess.run(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
     print(f"Video with captions saved to: {out_mov}")
 
 if __name__ == "__main__":
