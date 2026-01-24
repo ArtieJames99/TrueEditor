@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QSlider, QFrame, QRadioButton, QFileDialog,
     QStatusBar, QMessageBox, QProgressBar, QSizePolicy, QSpacerItem, QListWidgetItem, QStyle, QSplitter, QScrollArea,
     QTextEdit, QInputDialog
-)
+, QMenu)
 
 
 # --- Video utilities (FFmpeg-based) ---
@@ -45,7 +45,20 @@ def get_video_resolution(path: str) -> tuple[int, int]:
     _, ffprobe = _get_ffmpeg_exes()
     cmd = [ffprobe, "-v", "error", "-select_streams", "v:0",
            "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)]
-    out = subprocess.check_output(cmd, text=True).strip()
+    
+    # Always hide the console window
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        startupinfo=startupinfo
+    )
+    out = result.stdout.strip()
     w, h = out.split(",")
     return int(w), int(h)
 
@@ -53,13 +66,23 @@ def grab_first_frame(path: str) -> QPixmap:
     """Extract first frame using ffmpeg and return a QPixmap."""
     ffmpeg, _ = _get_ffmpeg_exes()
     tmp = Path(tempfile.gettempdir()) / f"trueeditor_preview_{os.getpid()}.png"
-    # Seek to start and grab single frame
     cmd = [ffmpeg, "-y", "-ss", "00:00:00.000", "-i", str(path), "-frames:v", "1", str(tmp)]
+
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"[WARN] ffmpeg failed to extract frame: {result.stderr}")
-            return QPixmap()
+        # Always hide the console window
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            startupinfo=startupinfo
+        )
+        
         pix = QPixmap(str(tmp)) if tmp.exists() else QPixmap()
     except subprocess.CalledProcessError as e:
         print(f"[WARN] ffmpeg failed to extract frame: {e.stderr}")
@@ -67,13 +90,13 @@ def grab_first_frame(path: str) -> QPixmap:
     except Exception as e:
         print(f"[WARN] ffmpeg failed to extract frame: {e}")
         pix = QPixmap()
-    try:
-        if tmp.exists():
-            tmp.unlink()
-    except Exception:
-        pass
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
     return pix
-
 def _app_base_dir() -> Path:
     """
     Returns a stable base directory for resources.
@@ -92,9 +115,9 @@ def _app_base_dir() -> Path:
         #   macOS:   .../YourApp.app/Contents/MacOS/YourApp
         exe_dir = Path(sys.executable).resolve().parent
 
-        # If you prefer keeping "final/transcriptions" alongside the .app bundle:
+        # If you prefer keeping "TrueEditor/transcriptions" alongside the .app bundle:
         #   YourApp.app
-        #   final/
+        #   TrueEditor/
         #     transcriptions/
         # uncomment the next 4 lines:
         #
@@ -107,8 +130,10 @@ def _app_base_dir() -> Path:
         return exe_dir
     else:
         # Source: this file is at <project>/ui/TrueEditor-UI.py
-        return Path(__file__).resolve().parent.parent
-
+        base_dir = Path(__file__).resolve().parent.parent
+        true_editor_dir = base_dir / "TrueEditor"
+        true_editor_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir
 # -------------------------------
 # Custom ToggleSwitch (from your existing UI)
 # -------------------------------
@@ -688,22 +713,32 @@ class TrueEditor(QMainWindow):
         super().__init__()
         self.setWindowTitle('TrueEditor')
         self.resize(1024, 768)
-
+    
         # Settings & thread pool
         self.settings = QSettings('TrueEditor', 'TrueEditor')
         self.pool = QThreadPool.globalInstance()
-        self.backend: Dict[str, Callable] = {} 
-
+        self.backend: Dict[str, Callable] = {}
+    
         # Central TabWidget
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+
+        # Initialize the edited_videos_dir attribute and ensure it exists
+        base = _app_base_dir()
+        self.transcriptions_dir = (base / "TrueEditor" / "transcriptions").resolve()
+        self.transcriptions_dir.mkdir(parents=True, exist_ok=True)
+
+        # Ensure the TrueEditor/edited_videos directory exists
+        self.edited_videos_dir = (base / "TrueEditor" / "edited_videos").resolve()
+        self.edited_videos_dir.mkdir(parents=True, exist_ok=True)
+
         self.tabs.addTab(self._home_tab(), 'Home')
         self.tabs.addTab(self._captions_tab(), 'Captions')
         self.tabs.addTab(self._audio_tab(), 'Audio')
         self.tabs.addTab(self._branding_tab(), 'Branding')
         self.tabs.addTab(self._edit_tab(), 'Edit')
         self.tabs.addTab(self._run_tab(), 'Run')
-
+    
         # Status Bar + Progress
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -714,20 +749,7 @@ class TrueEditor(QMainWindow):
         self.status.addPermanentWidget(self.progress)
         self.status.showMessage('Ready  •  FFmpeg ✓  Whisper ✓')
 
-        # Set Default output path
-        default_output_path = str(Path(__file__).parent.parent / "final"/ "edited_videos")
-        self.output_path.setText(default_output_path)
-
-        base = _app_base_dir()
-        # Fixed relative: <base>/final/transcriptions
-        self.transcriptions_dir = (base / "final" / "transcriptions").resolve()
-        self.transcriptions_dir.mkdir(parents=True, exist_ok=True)
-
-
-        # Menu & toolbar
         self._apply_qss()
-
-    # ---------- QSS Theme ----------
     def _apply_qss(self):
         qss = '''
         /* ===== GLOBAL ===== */
@@ -1850,6 +1872,54 @@ class TrueEditor(QMainWindow):
             background-color: #1A1D21;
         }
 
+        QSpinBox, QDoubleSpinBox {
+            padding-right: 24px;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            background: #1e1e1e;
+            color: white;
+        }
+
+        QSpinBox::up-button, QDoubleSpinBox::up-button {
+            subcontrol-origin: border;
+            subcontrol-position: top right;
+            width: 24px;
+            border-left: 1px solid #3c3c3c;
+            border-top-right-radius: 6px;
+            background: #2b2b2b;
+        }
+
+        QSpinBox::down-button, QDoubleSpinBox::down-button {
+            subcontrol-origin: border;
+            subcontrol-position: bottom right;
+            width: 24px;
+            border-left: 1px solid #3c3c3c;
+            border-bottom-right-radius: 6px;
+            background: #2b2b2b;
+        }
+
+        QSpinBox::up-arrow {
+            image: url(:/icons/plus.svg);
+            width: 10px;
+            height: 10px;
+        }
+
+        QSpinBox::down-arrow {
+            image: url(:/icons/minus.svg);
+            width: 10px;
+            height: 2px;
+        }
+
+        QSpinBox::up-button:hover,
+        QSpinBox::down-button:hover {
+            background: #3a3a3a;
+        }
+
+        QSpinBox::up-button:pressed,
+        QSpinBox::down-button:pressed {
+            background: #0078d4;
+        }
+
         '''
         QApplication.instance().setStyleSheet(qss)
 
@@ -1859,9 +1929,7 @@ class TrueEditor(QMainWindow):
     ''' 
     TODO:  
     IMPORTANT: vocal isolation and Music, when using UI do not function correctly.
-    - Add Toggel in run tab that enables "Use Previous Caption Files" Else: Remove and make new file. 
     - Easy Out (endcards and Audio cleanup all files if error or quick shut down.)
-    - Add Import Folder Option
     - Project Naming Function (make so nests under a folder with project name)
     - Add Save/Load  Preset Functionality
     - 3-4 Common Presets that they can select within, then give the ability to load presets later
@@ -1897,19 +1965,19 @@ class TrueEditor(QMainWindow):
         root.setObjectName("HomeTabContainer")
         main_layout = QVBoxLayout(root)
         content_layout = QHBoxLayout()
-        
+    
         # Project Setup
         project_box = QGroupBox('Project Setup')
         project_box.setObjectName("primary")
         project_form = QFormLayout(project_box)
         self.project_name = QLineEdit()
         self.output_path = QLineEdit()
-
+    
         # Default Path
-        default_output_path = str(Path(__file__).parent.parent / "final"/ "edited_videos")
+        default_output_path = str(self.edited_videos_dir)
         self.output_path.setText(default_output_path)
         output_row = QHBoxLayout()
-
+    
         # Controls
         self.output_browse_btn = QPushButton('Browse')
         self.output_browse_btn.clicked.connect(self._select_output_folder)
@@ -2845,17 +2913,88 @@ class TrueEditor(QMainWindow):
 
         controls_layout.addLayout(btn_row)
 
+        
+        # --- Search / Filter row (put just above the caption list) ---
+        search_row = QHBoxLayout()
+        self.caption_search = QLineEdit()
+        self.caption_search.setPlaceholderText("Search captions (live filter)")
+        self.caption_search.textChanged.connect(self._filter_caption_list)
+        clear_search_btn = QPushButton("Clear")
+        clear_search_btn.clicked.connect(lambda: self.caption_search.clear())
+        search_row.addWidget(QLabel("Search"))
+        search_row.addWidget(self.caption_search, 1)
+        search_row.addWidget(clear_search_btn)
+        controls_layout.addLayout(search_row)
+
+        
+        mode_row = QHBoxLayout()
+        self.simple_mode_toggle = ToggleSwitch()
+        self.simple_mode_toggle.setChecked(True)  # default Simple
+        mode_row.addWidget(QLabel("Simple Mode"))
+        mode_row.addWidget(self.simple_mode_toggle)
+        mode_row.addStretch(1)
+        # A tiny “status pill”
+        self.edit_status_pill = QLabel("●")
+        self.edit_status_pill.setToolTip("Saved")
+        self.edit_status_pill.setStyleSheet("color: #4CAF50; font-weight: bold;")  # green when saved
+        mode_row.addWidget(self.edit_status_pill)
+        controls_layout.addLayout(mode_row)
+        self.simple_mode_toggle.toggled.connect(self._apply_edit_mode_visibility)
+
+        
+        mini_timeline = QHBoxLayout()
+        self.lbl_current_span = QLabel("00:00.000 – 00:00.000")
+        self.lbl_current_span.setStyleSheet("color: #9AA4AF;")
+        mini_timeline.addWidget(QLabel("Selected span:"))
+        mini_timeline.addWidget(self.lbl_current_span)
+        mini_timeline.addStretch(1)
+        controls_layout.addLayout(mini_timeline)
+
+
+
+
         # Caption list
         caption_lbl = QLabel("Captions *Re-Run TrueEditor after edits are complete")
         caption_lbl.setFont(QFont(caption_lbl.font().family(), pointSize=caption_lbl.font().pointSize(), weight=QFont.DemiBold))
         controls_layout.addWidget(caption_lbl)
+
+        
+        # --- Inline editor panel (collapsible) ---
+        self.inline_editor_box = QGroupBox("Inline Editor")
+        inline_form = QFormLayout(self.inline_editor_box)
+
+        self.ie_text = QLineEdit()
+        self.ie_start = QLineEdit() 
+        self.ie_end = QLineEdit()
+
+        # Buttons row
+        ie_btns = QHBoxLayout()
+        self.ie_apply_btn = QPushButton("Apply")
+        self.ie_cancel_btn = QPushButton("Cancel")
+        self.ie_play_btn = QPushButton("▶ Play From Start")
+        ie_btns.addWidget(self.ie_play_btn)
+        ie_btns.addStretch(1)
+        ie_btns.addWidget(self.ie_cancel_btn)
+        ie_btns.addWidget(self.ie_apply_btn)
+
+        inline_form.addRow("Text", self.ie_text)
+        inline_form.addRow("Start", self.ie_start)
+        inline_form.addRow("End", self.ie_end)
+        inline_form.addRow(ie_btns)
+
+        self.inline_editor_box.setVisible(False)
+        controls_layout.addWidget(self.inline_editor_box)
+
 
         self.caption_list = QListWidget()
         self.caption_list.itemDoubleClicked.connect(self._edit_caption_item)
         self.caption_list.currentRowChanged.connect(self._on_caption_row_changed)
         self.caption_list.setMinimumHeight(160)
         self.caption_list.setAlternatingRowColors(True)
-        controls_layout.addWidget(self.caption_list, 1)  # give it stretch
+        controls_layout.addWidget(self.caption_list, 1)  
+        self.caption_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.caption_list.customContextMenuRequested.connect(self._show_caption_context_menu)
+        
 
         # Raw .ass editor
         raw_lbl = QLabel("Raw Caption Editor")
@@ -2867,6 +3006,7 @@ class TrueEditor(QMainWindow):
         self.edit_ass_editor.textChanged.connect(self._on_ass_text_changed)
         self.edit_ass_editor.setEnabled(False)
         controls_layout.addWidget(self.edit_ass_editor, 2)
+    
 
         # Save button row
         action_row = QHBoxLayout()
@@ -2885,6 +3025,11 @@ class TrueEditor(QMainWindow):
 
         splitter.addWidget(controls)
 
+        self.ie_apply_btn.clicked.connect(self._inline_apply)
+        self.ie_cancel_btn.clicked.connect(self._inline_cancel)
+        self.ie_play_btn.clicked.connect(self._inline_play_from_here)
+
+
         # ---------------- Right: Preview ----------------
         preview_panel = QWidget()
         preview_layout = QVBoxLayout(preview_panel)
@@ -2898,7 +3043,6 @@ class TrueEditor(QMainWindow):
         prev_hdr.addStretch(1)
         preview_layout.addLayout(prev_hdr)
 
-        # Your preview surface (replace with your existing QWidget/label/canvas)
         # We'll use a QLabel placeholder called self.edit_preview_view
         self.edit_preview_view = QLabel("No preview")
         self.edit_preview_view.setAlignment(Qt.AlignCenter)
@@ -2915,6 +3059,7 @@ class TrueEditor(QMainWindow):
         splitter.setSizes([800, 400])
 
         layout.addWidget(splitter)
+        self._apply_edit_mode_visibility()
         return root
 
     def _run_tab(self) -> QWidget:
@@ -2962,8 +3107,6 @@ class TrueEditor(QMainWindow):
         self.progress_task.setRange(0, 100)
         self.progress_task.setValue(0)
         self.progress_task.setTextVisible(True)
-        progress_layout.addWidget(QLabel('Current Task Progress'))
-        progress_layout.addWidget(self.progress_task)
         
         # Pipeline stages
         stages_layout = QHBoxLayout()
@@ -3070,7 +3213,7 @@ class TrueEditor(QMainWindow):
             QMessageBox.information(self, 'Output Folder', 'Set an output folder first.')
 
     def _select_output_folder(self):
-        default_folder = str(Path() / '..' / 'final' / 'edited_videos')
+        default_folder = str(Path() / '..' / 'TrueEditor' / 'edited_videos')
         folder = QFileDialog.getExistingDirectory(self, 'Select Output Folder', default_folder)
         if folder:
             self.output_path.setText(folder)
@@ -3225,7 +3368,6 @@ class TrueEditor(QMainWindow):
         self.branding_preview._x = x_norm
         self.branding_preview._y = y_norm
         self.branding_preview.update()
-
     def _update_branding_preview_style(self):
         """Update branding preview style from controls."""
         self.branding_preview._brand_type = self.brand_type.currentText()
@@ -3421,6 +3563,7 @@ class TrueEditor(QMainWindow):
         self.caption_preview.update()
 
     # ---------- Backend connection ----------
+
     def connect_backend(self, **hooks: Callable):
         '''Register backend hooks.
         Supported keys: analyze, transcribe, captions, audio, branding, pipeline
@@ -3428,31 +3571,22 @@ class TrueEditor(QMainWindow):
         '''
         self.backend.update(hooks)
 
-    def _start_pipeline(self, test: bool):
-        fn = self.backend.get('pipeline')
-        if not fn:
-            QMessageBox.warning(self, 'No backend', 'Connect a pipeline backend via connect_backend(pipeline=...)')
-            return
-        args = {
-            'files': [self.video_list.item(i).text() for i in range(self.video_list.count())],
-            'output_folder': self.output_path.text().strip(),
-            'language': self.language_style_combo.currentText(),
-            'platform': self.platform_preset.currentText(),
-            'caption_style': self._collect_caption_style(),
-            'audio_settings': self._collect_audio_settings(),
-            'branding': self._collect_branding_settings(),
-            'test': test,
-        }
-        self._run_job(fn, **args)
+    '''Duplicated function: start pipeline remove if other works'''
 
-    def _collect_caption_style(self) -> Dict[str, Any]:
-        # Convert widget-normalized spinbox values into image-normalized coords
+    def _collect_caption_style(self) -> dict[str, Any]:
+        """
+        Gather all current caption settings from the UI.
+        Converts widget spinbox positions into normalized image coordinates.
+        """
         x_widget = self.x_position_spin.value() / 100.0
         y_widget = self.y_position_spin.value() / 100.0
         try:
             x_img, y_img = self.caption_preview.widget_to_image_normalized(x_widget, y_widget)
         except Exception:
             x_img, y_img = x_widget, y_widget
+
+        # Default anchor for \an (ASS alignment) is center-bottom = 5
+        anchor = 5
 
         return {
             'font': self.font_combo.currentText(),
@@ -3463,7 +3597,7 @@ class TrueEditor(QMainWindow):
 
             'background': {
                 'enabled': self.background_toggle.isChecked(),
-                'color': self.caption_preview._background_color.name(),
+                'color': getattr(self.caption_preview, '_background_color', QColor(0,0,0)).name(),
                 'padding': self.bg_padding_spin.value(),
                 'corner_radius': self.bg_radius_spin.value(),
                 'opacity': self.bg_opacity_slider.value(),
@@ -3471,15 +3605,15 @@ class TrueEditor(QMainWindow):
 
             'karaoke': {
                 'enabled': self.karaoke_toggle.isChecked(),
-                'color': self.caption_preview._karaoke_color.name(),
+                'color': getattr(self.caption_preview, '_karaoke_color', QColor(255,0,0)).name(),
             },
 
-            'font_color': self.caption_preview._base_color.name(),
+            'font_color': getattr(self.caption_preview, '_base_color', QColor(255,255,255)).name(),
 
             'position': {
-                # position is now normalized to the actual displayed image (0..1)
                 'x': x_img,
                 'y': y_img,
+                'anchor': anchor,   # ensures save_ass and pipeline_runner know \an
             },
 
             'length_mode': self._get_length_mode(),
@@ -3578,31 +3712,41 @@ class TrueEditor(QMainWindow):
     def _on_log(self, message: str):
         """Enhanced logging with timestamps, categorization, and progress tracking."""
         timestamp = datetime.datetime.now().strftime('%H:%M:%S')
-    
-        # Categorize messages for better tracking
+
+        # Default formatting
+        formatted_message = f"ℹ️ [{timestamp}] {message}"
+
+        # Categorize messages
         if 'Error' in message or 'Failed' in message or 'Error:' in message:
             formatted_message = f"❌ [{timestamp}] {message}"
-            self.run_log.addItem(formatted_message)
         elif 'Starting' in message or 'Processing' in message or 'Job started' in message:
             formatted_message = f"🚀 [{timestamp}] {message}"
-            self.run_log.addItem(formatted_message)
         elif 'Finished' in message or 'Completed' in message or 'Job finished' in message:
             formatted_message = f"✅ [{timestamp}] {message}"
-            self.run_log.addItem(formatted_message)
         elif 'Warning' in message:
             formatted_message = f"⚠️ [{timestamp}] {message}"
-            self.run_log.addItem(formatted_message)
-        else:
-            formatted_message = f"ℹ️ [{timestamp}] {message}"
-            self.run_log.addItem(formatted_message)
-    
-        # Parse and update task progress if the message contains task progress information
-        if 'Task Progress:' in message:
+
+        # 🔒 SAFETY GUARD (THIS IS THE IMPORTANT PART)
+        if self.run_log is not None:
             try:
-                task_progress_value = int(message.split('Task Progress:')[1].strip().split('%')[0])
+                self.run_log.addItem(formatted_message)
+                self.run_log.scrollToBottom()
+            except Exception as e:
+                print(f"[UI LOG FAIL] {formatted_message} ({e})")
+        else:
+            # EXE / early-start fallback
+            print(formatted_message)
+
+        # Progress parsing (also guarded)
+        if 'Task Progress:' in message and hasattr(self, 'progress_task'):
+            try:
+                task_progress_value = int(
+                    message.split('Task Progress:')[1].strip().split('%')[0]
+                )
                 self.progress_task.setValue(task_progress_value)
-            except (ValueError, IndexError):
+            except Exception:
                 pass
+
     
         # Parse and update overall progress if the message contains overall progress information
         if 'Overall Progress:' in message:
@@ -3640,6 +3784,48 @@ class TrueEditor(QMainWindow):
         self.status.showMessage('Batch processing completed')
         self.btn_stop.setEnabled(False)
 
+    
+    def _inline_apply(self):
+        """Apply inline edits to selected item's grouped lines and mark dirty."""
+        row = self.caption_list.currentRow()
+        if row < 0: return
+        item = self.caption_list.item(row)
+        lines = item.data(Qt.UserRole)
+        if not lines: return
+
+        new_text = self.ie_text.text()
+        new_start = self.ie_start.text()
+        new_end = self.ie_end.text()
+
+        updated_lines = []
+        for ln in lines:
+            parts = ln.split(',', 9)
+            if len(parts) >= 10:
+                parts[1] = new_start
+                parts[2] = new_end
+                # preserve any override tags that appear BEFORE plain text
+                original_text = parts[9]
+                prefix_tags = ''.join(re.findall(r'\{.*?\}', original_text))
+                parts[9] = prefix_tags + new_text
+                ln = ','.join(parts[:9] + [parts[9]])
+            updated_lines.append(ln)
+
+        # update item store
+        item.setData(Qt.UserRole, updated_lines)
+        item.setText(f"{new_start} - {new_end}: {new_text}")
+        # rebuild raw buffer from list
+        self._rebuild_ass_from_list()
+        self._set_dirty(True)
+        self._micro_toast("Applied")
+
+    def _inline_cancel(self):
+        self.inline_editor_box.setVisible(False)
+
+    def _inline_play_from_here(self):
+        """Placeholder hook: in future, integrate QMediaPlayer to play from start."""
+        self._micro_toast("Would play from start (media engine not yet attached)")
+
+
     # ---------- Enhanced Run Tab Methods ----------
     def _start_pipeline(self, test: bool):
         # Initialize enhanced tracking
@@ -3656,6 +3842,11 @@ class TrueEditor(QMainWindow):
         file_count = self.video_list.count()
         estimated_minutes = file_count * 5  # Rough estimate: 5 minutes per file
         self.lbl_est_time.setText(f'Estimated Time: ~{estimated_minutes} minutes')
+
+        # collect Color styling from caption styles
+        ui_style = self._collect_caption_style()
+        base_color_hex = ui_style.get('font_color', '#FFFFFF')
+        karaoke_color_hex = (ui_style.get('karaoke') or {}).get('color', '#FF0000')
         
         args = {
             'files': [self.video_list.item(i).text() for i in range(self.video_list.count())],
@@ -3666,6 +3857,9 @@ class TrueEditor(QMainWindow):
             'audio_settings': self._collect_audio_settings(),
             'branding': self._collect_branding_settings(),
             'test': test,
+            'base_color_hex': base_color_hex,
+            'karaoke_color_hex': karaoke_color_hex,
+
         }
         self._run_job(fn, **args)
         self.btn_stop.setEnabled(True)
@@ -3754,18 +3948,7 @@ class TrueEditor(QMainWindow):
         self.caption_controls_container.setVisible(
             self.captions_toggle.isChecked()
         )
-        
-    def _toggle_captions_config(self, checked: bool):
-        """Show/hide caption configuration box based on toggle state."""
-        self.captions_config_box.setVisible(checked)
 
-    def _toggle_audio_config(self, checked: bool):
-        """Show/hide caption configuration box based on toggle state."""
-        self.audio_config_box.setVisible(checked)
-
-    def _toggle_branding_config(self, checked: bool):
-        """Show/hide branding configuration box based on toggle state."""
-        self.branding_config_box.setVisible(checked)
 
     # ---------- Synchronization Methods ----------
     def _connect_home_to_tabs(self):
@@ -3887,14 +4070,28 @@ class TrueEditor(QMainWindow):
     def _ensure_transcriptions_dir(self):
         """
         Ensure we have a configured transcriptions directory.
-        Defaults to '<cwd>/final/transcriptions' if not already set.
+        Defaults to '<cwd>/TrueEditor/transcriptions' if not already set.
         You can override self.transcriptions_dir externally to match your deployment.
         """
         if not hasattr(self, "transcriptions_dir") or not self.transcriptions_dir:
             # DEFAULT: project-relative folder; adjust if you want a fixed absolute path:
-            # e.g., Path(r"C:\TrueEdits-7\final\transcriptions")
-            self.transcriptions_dir = Path.cwd() / "final" / "transcriptions"
+            # e.g., Path(r"C:\TrueEdits-7\TrueEditor\transcriptions")
+            self.transcriptions_dir = Path.cwd() / "TrueEditor" / "transcriptions"
+            self.output_dir = Path.cwd() / "TrueEditor" / "edited_videos"
+        
+        # Ensure both directories exist
         self.transcriptions_dir = Path(self.transcriptions_dir)
+        self.transcriptions_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure output directory exists
+        if not hasattr(self, "output_dir"):
+            self.output_dir = Path.cwd() / "TrueEditor" / "edited_videos"
+        self.output_dir = Path(self.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Update the output path field if it exists
+        if hasattr(self, 'output_path') and self.output_path:
+            self.output_path.setText(str(self.output_dir))
 
 
     def _video_stem_without_edited(self, video_path: Path) -> str:
@@ -3942,62 +4139,217 @@ class TrueEditor(QMainWindow):
                     f"Expected:\n- {ass_path}"
                 )
             )
-        
     def _load_ass_for_edit(self, ass_path: str):
         try:
             import pysubs2
             subs = pysubs2.load(ass_path)
             self.caption_list.clear()
             self.edit_ass_editor.clear()
-            for line in subs:
-                item_text = f"{line.start:.3f}s - {line.end:.3f}s: {line.text}"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, line)  # Store the line object
-                self.caption_list.addItem(item)
-            # Also load raw content
+            # Load raw content
             with open(ass_path, 'r', encoding='utf-8') as f:
-                self.edit_ass_editor.setPlainText(f.read())
+                ass_text = f.read()
+                self.edit_ass_editor.setPlainText(ass_text)
+            # Populate the caption list using the updated method
+            self._populate_caption_list_from_ass(ass_text)
             self.current_edit_ass_path = ass_path
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to load .ass: {str(e)}")
 
     def _edit_caption_item(self, item):
         # On double-click, edit the text
-        line = item.data(Qt.UserRole)
-        new_text, ok = QInputDialog.getText(self, "Edit Caption", "Text:", text=line.text)
-        if ok and new_text != line.text:
-            line.text = new_text
-            item.setText(f"{line.start:.3f}s - {line.end:.3f}s: {new_text}")
+        lines = item.data(Qt.UserRole)
+        if not lines:
+            return
+        
+        # Extract the clean text from the first line
+        first_line = lines[0]
+        parts = first_line.split(',', 9)
+        if len(parts) < 10:
+            return
+        
+        text = parts[9]
+        clean_text = text.replace('{\an5\pos(540,1344)\alpha&H00&\c&H46ff5f&}', '')
+        clean_text = clean_text.replace('{\an5\pos(540,1344)}', '')
+        clean_text = clean_text.replace('{\alpha&H00&\c&Hff1443&}', '')
+        clean_text = clean_text.replace('{\alpha&HFF&}', '')
+        clean_text = re.sub(r'\{.*?\}', '', clean_text)
+        
+        new_text, ok = QInputDialog.getText(self, "Edit Caption", "Text:", text=clean_text)
+        if ok and new_text != clean_text:
+            # Update all related lines with the new text
+            for line in lines:
+                parts = line.split(',', 9)
+                if len(parts) >= 10:
+                    parts[9] = new_text
+                    # Reconstruct the line
+                    updated_line = ','.join(parts[:9] + [new_text])
+                    # Update the line in the list
+                    index = lines.index(line)
+                    lines[index] = updated_line
+            
+            # Update the item text
+            item.setText(f"{parts[1]} - {parts[2]}: {new_text}")
             # Update raw editor (rebuild .ass)
             self._rebuild_ass_from_list()
 
-    def _rebuild_ass_from_list(self):
-        if not hasattr(self, 'current_edit_ass_path'):
-            return
-        try:
-            import pysubs2
-            subs = pysubs2.SSAFile()
-            for i in range(self.caption_list.count()):
-                item = self.caption_list.item(i)
-                line = item.data(Qt.UserRole)
-                subs.append(line)
-            # Save to raw editor
-            output = str(subs)
-            self.edit_ass_editor.setPlainText(output)
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to rebuild .ass: {str(e)}")
 
-    def _save_edit_ass(self):
-        if not hasattr(self, 'current_edit_ass_path'):
-            QMessageBox.warning(self, "Error", "No .ass file loaded.")
+    def _show_caption_context_menu(self, pos):
+        item = self.caption_list.itemAt(pos)
+        if not item:
             return
+        menu = QMenu(self.caption_list)
+        act_edit = menu.addAction("Edit (Inline)")
+        act_split = menu.addAction("Split at Cursor…")
+        act_merge_prev = menu.addAction("Merge with Previous")
+        act_dup = menu.addAction("Duplicate")
+        menu.addSeparator()
+        act_delete = menu.addAction("Delete")
+        chosen = menu.exec(self.caption_list.mapToGlobal(pos))
+        if chosen == act_edit:
+            self._inline_open_for_item(item)
+        elif chosen == act_split:
+            self._split_caption_for_item(item)
+        elif chosen == act_merge_prev:
+            self._merge_with_previous(item)
+        elif chosen == act_dup:
+            self._duplicate_item(item)
+        elif chosen == act_delete:
+            self._delete_item(item)
+
+    def _inline_open_for_item(self, item):
+        self.caption_list.setCurrentItem(item)
+        self.inline_editor_box.setVisible(True)
+
+
+
+    def _rebuild_ass_from_list(self):
+        """
+        Build a fresh ASS buffer from what's currently shown in the Simple editor list.
+
+        Strategy:
+        - Keep everything outside the [Events] section exactly as-is.
+        - Replace the whole [Events] section body with the current list of Dialogue lines (verbatim).
+        """
+        import re
+
+        # Start from whatever is in the Raw editor (or the pristine text we loaded)
+        base_text = self.edit_ass_editor.toPlainText() if self.edit_ass_editor.toPlainText() else getattr(self, "_ass_original_text", "")
+        if not base_text:
+            return
+
+        # Collect Dialogue lines (verbatim) from the UI list
+        new_dialogue_lines = []
+        for i in range(self.caption_list.count()):
+            item = self.caption_list.item(i)
+            lines = item.data(Qt.UserRole) or []
+            # Keep only real Dialogue lines and keep them in order
+            new_dialogue_lines.extend([ln for ln in lines if ln.strip().startswith("Dialogue:")])
+
+        # Find the current [Events] block (from "[Events]" up to next section header or EOF)
+        events_block_re = re.compile(r'(?is)^\[Events\][\s\S]*?(?=^\[|\Z)', re.MULTILINE)
+        m_block = events_block_re.search(base_text)
+
+        # Derive the header for [Events]: preserve existing "Format:" and any non-Dialogue lines under [Events]
+        def _make_events_header(block_text: str) -> str:
+            header = ["[Events]"]
+            if not block_text:
+                # Minimal fallback
+                header.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+                return "\n".join(header) + "\n"
+            # Keep every non-Dialogue line in the block (e.g., Format:, Comment:)
+            for line in block_text.splitlines()[1:]:
+                if line.strip().startswith("Dialogue:"):
+                    break
+                header.append(line)
+            return "\n".join(header).rstrip() + "\n"
+
+        if m_block:
+            old_block = m_block.group(0)
+            events_header = _make_events_header(old_block)
+        else:
+            events_header = _make_events_header("")  # minimal header
+
+        new_events_block = events_header + ("\n".join(new_dialogue_lines)) + ("\n" if new_dialogue_lines else "")
+
+        # Substitute the block (or append if it didn't exist)
+        if m_block:
+            new_text = events_block_re.sub(lambda m: new_events_block, base_text, count=1)
+        else:
+            new_text = base_text.rstrip() + "\n\n" + new_events_block
+
+        # Update the Raw editor without firing textChanged
+        self.edit_ass_editor.blockSignals(True)
+        self.edit_ass_editor.setPlainText(new_text)
+        self.edit_ass_editor.blockSignals(False)
+
+        # Mark as dirty so the Save button state & status pill are correct
+        self._set_dirty(True)
+
+
+    def _apply_edit_mode_visibility(self):
+        simple = self.simple_mode_toggle.isChecked()
+        # Hide raw ASS editor & buttons in Simple mode
+        self.edit_ass_editor.setVisible(not simple)
+        self.save_btn.setVisible(True)        # keep visible
+        self.revert_btn.setVisible(not simple)
+
+    def _filter_caption_list(self, query: str):
+        q = (query or '').strip().lower()
+        for i in range(self.caption_list.count()):
+            item = self.caption_list.item(i)
+            lines = item.data(Qt.UserRole)
+            itext = item.text().lower()
+            hide = bool(q) and q not in itext and not (lines and any(q in ln.lower() for ln in lines))
+            item.setHidden(hide)
+
+
+
+    def _set_dirty(self, dirty: bool):
+        self._ass_dirty = bool(dirty)
+        if dirty:
+            self.edit_status_pill.setText("●")
+            self.edit_status_pill.setToolTip("Unsaved changes")
+            self.edit_status_pill.setStyleSheet("color: #FFC107; font-weight: bold;")  # amber
+        else:
+            self.edit_status_pill.setText("●")
+            self.edit_status_pill.setToolTip("Saved")
+            self.edit_status_pill.setStyleSheet("color: #4CAF50; font-weight: bold;")  # green
+
+    def _micro_toast(self, text: str, ms: int = 900):
+        # status bar flash + optional transient label could be added later
+        self.status.showMessage(text, ms)
+
+    def _rotate_backups(self, path: Path, keep: int = 5):
+        # Make numbered backups: file.ass.bak1 ... bak5
+        for i in reversed(range(1, keep)):
+            older = path.with_suffix(path.suffix + f".bak{i}")
+            newer = path.with_suffix(path.suffix + f".bak{i+1}")
+            if older.exists():
+                try: older.replace(newer)
+                except Exception: pass
+        # write the newest backup
+        bak1 = path.with_suffix(path.suffix + ".bak1")
         try:
-            content = self.edit_ass_editor.toPlainText()
-            with open(self.current_edit_ass_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            self.status.showMessage(f"Saved .ass: {self.current_edit_ass_path}")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to save: {str(e)}")
+            text = path.read_text(encoding="utf-8")
+            bak1.write_text(text, encoding="utf-8")
+        except Exception:
+            pass
+
+    def _rotate_backups(self, path: Path, keep: int = 5):
+        # Make numbered backups: file.ass.bak1 ... bak5
+        for i in reversed(range(1, keep)):
+            older = path.with_suffix(path.suffix + f".bak{i}")
+            newer = path.with_suffix(path.suffix + f".bak{i+1}")
+            if older.exists():
+                try: older.replace(newer)
+                except Exception: pass
+        # write the newest backup
+        bak1 = path.with_suffix(path.suffix + ".bak1")
+        try:
+            text = path.read_text(encoding="utf-8")
+            bak1.write_text(text, encoding="utf-8")
+        except Exception:
+            pass
 
     def _load_ass_for_edit(self, ass_path: str):
         """Load .ass into editor and list; enable controls and build preview."""
@@ -4030,42 +4382,63 @@ class TrueEditor(QMainWindow):
         self._refresh_edit_preview()
 
     def _populate_caption_list_from_ass(self, ass_text: str):
-        """Very basic ASS events parser: list each 'Dialogue:' line as an item."""
+        """Populate the caption list with unique text entries, grouping lines with the same text."""
         self.caption_list.clear()
         lines = ass_text.splitlines()
+        text_to_lines = {}
         for ln in lines:
-            if ln.lstrip().lower().startswith("dialogue:"):
-                # You can parse time/text more precisely if you need
-                # Example ASS event format starts with: Dialogue: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-                # We'll show the text part after the 9th comma as a quick preview
-                parts = ln.split(",", 9)
-                preview = parts[-1].strip() if len(parts) >= 10 else ln.strip()
-                item = QListWidgetItem(preview[:120])  # cap preview
-                item.setData(Qt.UserRole, ln)  # keep full line for editing reference
+            if ln.startswith('Dialogue:'):
+                parts = ln.split(',', 9)
+                if len(parts) >= 10:
+                    text = parts[9]
+                    clean_text = re.sub(r'\{.*?\}', '', text)
+                    text_to_lines.setdefault(clean_text, []).append(ln)
+        for clean_text, grouped_lines in text_to_lines.items():
+            first = grouped_lines[0].split(',', 9)
+            if len(first) >= 10:
+                start_time = first[1]
+                end_time = first[2]
+                item_text = f"{start_time} - {end_time}: {clean_text}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, grouped_lines)
                 self.caption_list.addItem(item)
 
     def _on_caption_row_changed(self, row: int):
-        """Optional: when selecting a caption, you could scroll to it in the raw editor."""
+        """When selecting a caption, sync inline editor + raw editor cursor."""
         if row < 0:
+            self.inline_editor_box.setVisible(False)
             return
         item = self.caption_list.item(row)
         if not item:
+            self.inline_editor_box.setVisible(False)
             return
-        line = item.data(Qt.UserRole)
-        if not line:
+        grouped_lines = item.data(Qt.UserRole)
+        if not grouped_lines:
+            self.inline_editor_box.setVisible(False)
             return
-        # Find and select the line in the raw editor
+        first_line = grouped_lines[0]
+        parts = first_line.split(',', 9)
+        if len(parts) >= 10:
+            start_time = parts[1].strip()
+            end_time = parts[2].strip()
+            raw_text = parts[9]
+            clean_text = re.sub(r'\{.*?\}', '', raw_text)
+            self.ie_text.setText(clean_text)
+            self.ie_start.setText(start_time)
+            self.ie_end.setText(end_time)
+            self.lbl_current_span.setText(f"{start_time} – {end_time}")
+            self.inline_editor_box.setVisible(True)
         cursor = self.edit_ass_editor.textCursor()
         doc = self.edit_ass_editor.document()
-        it = doc.find(line)
-        if it.isNull():
-            return
-        self.edit_ass_editor.setTextCursor(it)
-        self.edit_ass_editor.setFocus()
+        it = doc.find(first_line)
+        if not it.isNull():
+            self.edit_ass_editor.setTextCursor(it)
+            self.edit_ass_editor.setFocus()
+
 
     def _on_ass_text_changed(self):
         """Mark buffer dirty and (optionally) debounce preview refresh."""
-        self._ass_dirty = True
+        self._set_dirty(True)
         # You can debounce and auto-refresh preview; for now keep manual Refresh button.
 
     def _save_edit_ass(self):
@@ -4075,9 +4448,20 @@ class TrueEditor(QMainWindow):
             return
         text = self.edit_ass_editor.toPlainText()
         try:
+            # Debug: Print the file path and text to ensure they are correct
+            print(f"Saving to: {self.current_ass_path}")
+            print(f"Text to save: {text[:100]}...")  # Print first 100 characters
+            
+            # BEFORE writing new content
+            self._rotate_backups(self.current_ass_path, keep=5)
             self.current_ass_path.write_text(text, encoding="utf-8")
+            
+            # Debug: Verify the file was written correctly
+            saved_text = self.current_ass_path.read_text(encoding="utf-8")
+            print(f"Saved text: {saved_text[:100]}...")  # Print first 100 characters
+            
             self._ass_original_text = text
-            self._ass_dirty = False
+            self._set_dirty(False)
             # Rebuild list in case structure changed
             self._populate_caption_list_from_ass(text)
             QMessageBox.information(self, "Saved", f"Saved:\n{self.current_ass_path.name}")
@@ -4090,7 +4474,7 @@ class TrueEditor(QMainWindow):
         self.edit_ass_editor.blockSignals(True)
         self.edit_ass_editor.setPlainText(self._ass_original_text)
         self.edit_ass_editor.blockSignals(False)
-        self._ass_dirty = False
+        self._set_dirty(False)
         self._populate_caption_list_from_ass(self._ass_original_text)
 
 
