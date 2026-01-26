@@ -8,7 +8,8 @@ from scipy.io import wavfile
 from df import enhance, init_df
 from pathlib import Path
 import numpy as np
-import subprocess
+from subprocess import CalledProcessError, run, STARTUPINFO, CREATE_NO_WINDOW
+from datetime import datetime
 
 # --------------------------------------------------
 # Paths
@@ -18,7 +19,9 @@ FFMPEG_EXE = (SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffmpeg.exe").resolve()
 os.environ["PATH"] = str(FFMPEG_EXE.parent) + os.pathsep + os.environ.get("PATH", "")
 TEMP_DIR = (SCRIPT_DIR.parent / "TrueEditor" / "temp_audio").resolve()
 
-os.environ["PATH"] = str(FFMPEG_EXE.parent) + os.pathsep + os.environ.get("PATH", "")
+def log_message(level, msg):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] [{level}] {msg}")
 
 # --------------------------------------------------
 # DeepFilterNet initialization
@@ -40,18 +43,31 @@ def get_df_model():
 _active_subprocesses = []
 
 def run_ffmpeg(cmd):
+    """
+    Run FFmpeg silently with proper error handling.
+    Raises CalledProcessError on failure.
+    """
     cmd = [str(c) for c in cmd]
     print(f"[DEBUG] Running FFmpeg: {' '.join(cmd)}")
-    startupinfo = subprocess.STARTUPINFO()
+
+    startupinfo = STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
-    process = subprocess.Popen(cmd, capture_output=True, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
-    _active_subprocesses.append(process)
-    result = process.communicate()
-    if process.returncode != 0:
-        print("[ERROR] FFmpeg failed:")
-        print(result.stderr)
-        raise RuntimeError(f"FFmpeg failed with code {process.returncode}")
+
+    try:
+        result = run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            startupinfo=startupinfo,
+            creationflags=CREATE_NO_WINDOW
+        )
+    except CalledProcessError as e:
+        print(f"[ERROR] FFmpeg failed with code {e.returncode}")
+        print(f"[ERROR] stderr: {e.stderr}")
+        raise
     return result
 
 # --------------------------------------------------
@@ -89,36 +105,44 @@ def conform_isolated_to_video(
     """
 
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-
     # 1) Extract reference audio (uniform SR/ch layout)
     ref_wav = out_wav.parent / f"{reference_video.stem}_ref.wav"
-    startupinfo = subprocess.STARTUPINFO()
+    startupinfo = STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
-    subprocess.Popen([
-        str(ffmpeg_exe), "-y",
-        "-i", str(reference_video),
-        "-vn",
-        "-ac", str(target_channels),
-        "-ar", str(target_sr),
-        "-c:a", "pcm_s16le",
-        str(ref_wav)
-    ], check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+
+    try:
+        run([
+            str(ffmpeg_exe), "-y",
+            "-i", str(reference_video),
+            "-vn",
+            "-ac", str(target_channels),
+            "-ar", str(target_sr),
+            "-c:a", "pcm_s16le",
+            str(ref_wav)
+        ], check=True, startupinfo=startupinfo, creationflags=CREATE_NO_WINDOW)
+    except CalledProcessError as e:
+        log_message("ERROR", f"Failed to extract reference audio: {e}")
+        raise
 
     # 2) Resample/upmix isolated to target
     iso_resamp = out_wav.parent / f"{out_wav.stem}_resamp.wav"
-    startupinfo = subprocess.STARTUPINFO()
+    startupinfo = STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
-    subprocess.Popen([
-        str(ffmpeg_exe), "-y",
-        "-i", str(isolated_wav),
-        "-ac", str(target_channels),
-        "-ar", str(target_sr),
-        "-c:a", "pcm_s16le",
-        str(iso_resamp)
-    ], check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
 
+    try:
+        run([
+            str(ffmpeg_exe), "-y",
+            "-i", str(isolated_wav),
+            "-ac", str(target_channels),
+            "-ar", str(target_sr),
+            "-c:a", "pcm_s16le",
+            str(iso_resamp)
+        ], check=True, startupinfo=startupinfo, creationflags=CREATE_NO_WINDOW)
+    except CalledProcessError as e:
+        log_message("ERROR", f"Failed to resample isolated audio: {e}")
+        raise
     # 3) Length match (pad/truncate)
     sr_ref, ref_data = wavfile.read(str(ref_wav))       # (N, 2)
     sr_iso, iso_data = wavfile.read(str(iso_resamp))    # (M, 2 or 1)

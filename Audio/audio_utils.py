@@ -14,7 +14,7 @@ def run_ffmpeg(cmd):
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
-    process = subprocess.Popen(cmd, capture_output=True, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
     result = process.communicate()
     if process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, cmd, result[1])

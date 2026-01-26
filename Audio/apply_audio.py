@@ -6,6 +6,7 @@ Licensed under the terms in the LICENSE file in the root of this repository.
 
 from pathlib import Path
 import subprocess
+import main
 
 
 # Global list to keep track of active subprocesses
@@ -38,7 +39,16 @@ def apply_audio(
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0
-        subprocess.Popen(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            stdout, stderr = process.communicate(timeout=1)  # short timeout
+        except subprocess.TimeoutExpired:
+            if main._stop_pipeline:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise KeyboardInterrupt("Pipeline stopped by user")
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd, output=stdout, stderr=stderr)
         return
 
     # === Base audio filter ===
@@ -74,4 +84,16 @@ def apply_audio(
         str(video_out)
     ]
 
-    subprocess.Popen(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        stdout, stderr = process.communicate(timeout=1)  # short timeout
+    except subprocess.TimeoutExpired:
+        if main._stop_pipeline:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise KeyboardInterrupt("Pipeline stopped by user")
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd, output=stdout, stderr=stderr)

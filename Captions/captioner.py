@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from .ass_style import AssStyle
+import main
 import json
 
 # Global list to keep track of active subprocesses
@@ -242,7 +243,13 @@ def get_video_resolution(video_path):
     startupinfo.wShowWindow = 0
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
     _active_subprocesses.append(process)
-    stdout, stderr = process.communicate()
+    try:
+        stdout, stderr = process.communicate(timeout=1)  # short timeout
+    except subprocess.TimeoutExpired:
+        if main._stop_pipeline:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise KeyboardInterrupt("Pipeline stopped by user")
     data = json.loads(stdout)
     stream = data["streams"][0]
 
@@ -659,7 +666,7 @@ def mp4_to_ass(video_path, model_name="small", language=None, style: AssStyle | 
 
 
 # === Main transcription ===
-def main(video_path, language=None):
+def main_transcription(video_path, language=None):
     video_path = Path(video_path)
     if not video_path.is_file(): raise FileNotFoundError(video_path)
 
@@ -691,4 +698,4 @@ if __name__ == "__main__":
         except IndexError:
             print("Error: --language requires a language argument")
             sys.exit(1)
-    main(video_path, language=language)
+    main_transcription(video_path, language=language)

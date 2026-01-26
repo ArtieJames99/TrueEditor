@@ -9,7 +9,7 @@ import inspect
 from pathlib import Path
 import datetime
 from typing import Callable, Optional, Dict, Any
-
+from Core import pipeline_state
 from PySide6.QtCore import (
     Qt, QSize, QRectF, QPoint, QUrl,
     QObject, Signal, Slot, QRunnable, QThreadPool, QSettings
@@ -46,20 +46,21 @@ def get_video_resolution(path: str) -> tuple[int, int]:
     _, ffprobe = _get_ffmpeg_exes()
     cmd = [ffprobe, "-v", "error", "-select_streams", "v:0",
            "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)]
-    
+
     # Always hide the console window
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0  # SW_HIDE
     result = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         startupinfo=startupinfo,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
-    out = result.stdout.strip()
-    w, h = out.split(",")
+    out, err = result.communicate()
+    w, h = out.strip().split(",")
     return int(w), int(h)
 
 def grab_first_frame(path: str) -> QPixmap:
@@ -76,7 +77,14 @@ def grab_first_frame(path: str) -> QPixmap:
 
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
         _active_subprocesses.append(process)
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=1)  # short timeout
+        except subprocess.TimeoutExpired:
+            if pipeline_state._stop_pipeline:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise KeyboardInterrupt("Pipeline stopped by user")
+
 
         if process.returncode != 0:
             print(f"[WARN] ffmpeg failed to extract frame: {stderr}")
@@ -710,7 +718,7 @@ class TrueEditor(QMainWindow):
         self.setWindowTitle('TrueEditor')
         self.resize(1024, 768)
 
-        assets_path = Path(__file__).parent.parent / "assets" / "icons"
+        assets_path = Path(__file__).parent.parent / "assets" / "Icons"
 
         if sys.platform.startswith("darwin"):  # macOS
             icon_file = assets_path / "TrueEditor.png"
@@ -3925,21 +3933,6 @@ class TrueEditor(QMainWindow):
             elif status == 'queued':
                 item.setText(f"⏳ Queued: {file_name}")
 
-    def _stop_pipeline(self):
-        """Stop the current pipeline execution and force shutdown of all subprocesses."""
-        # Call the cleanup function to kill all subprocesses
-        from main import cleanup
-        cleanup()
-        
-        # Update UI state
-        self.status.showMessage('Pipeline stopped by user')
-        self.btn_stop.setEnabled(False)
-        self.run_log.addItem("🛑 Pipeline stopped by user - Force shutdown initiated")
-        
-        # Also stop any running workers in the thread pool
-        self.pool.clear()
-        self.pool.waitForDone(1000)  # Wait up to 1 second for workers to finish
-
     def _clear_log(self):
         """Clear the processing log."""
         self.run_log.clear()
@@ -4522,26 +4515,26 @@ class TrueEditor(QMainWindow):
         self.edit_preview_view.setText("")
 
     def _stop_pipeline(self):
-        """Stop the pipeline and perform cleanup with force shutdown."""
-        print("Stopping pipeline...")
+        """Stop the current pipeline execution and force shutdown of all subprocesses."""
+        # Add logging to debug the issue
+        print("[DEBUG] _stop_pipeline called")
+        import traceback
+        traceback.print_stack()
+
         # Call the cleanup function to kill all subprocesses
         from main import cleanup
         cleanup()
-        
-        # Additional logic to stop the pipeline
-        self._pipeline_running = False
-        self.progress.setValue(0)
-        
-        # Stop any running workers in the thread pool
+
+        # Update UI state
+        self.status.showMessage('Pipeline stopped by user')
+        self.btn_stop.setEnabled(False)
+        self.run_log.addItem("🛑 Pipeline stopped by user - Force shutdown initiated")
+
+        # Also stop any running workers in the thread pool
         self.pool.clear()
         self.pool.waitForDone(1000)  # Wait up to 1 second for workers to finish
-        
-        # Update UI to reflect force shutdown
-        self.status.showMessage('Pipeline force stopped')
-        self.run_log.addItem("🛑 Pipeline force stopped - All subprocesses terminated")
-        self.status.showMessage("Pipeline stopped.")
 
-def main():
+def main_run():
     app = QApplication(sys.argv)
     win = TrueEditor()
     
@@ -4566,4 +4559,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main_run()

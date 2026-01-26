@@ -8,104 +8,19 @@ import atexit
 import signal
 import argparse
 import warnings
-import subprocess
 import platform
+from Core.pipeline_state import cleanup
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
-from ui.TrueEditor_UI import main as ui_main
+from ui.TrueEditor_UI import main_run as ui_main
 from multiprocessing import freeze_support
 from Core.logging_utils import setup_logging
-from ui.TrueEditor_UI import main as ui_main
 
 
 warnings.filterwarnings(
     "ignore",
     message=".*AudioMetaData.*",
 )
-
-# Global list to keep track of active subprocesses
-_active_subprocesses = []
-# Global flag to indicate if the pipeline should stop
-_stop_pipeline = False
-# Flag to prevent multiple cleanup calls
-_cleanup_called = False
-
-def cleanup():
-    """Cleanup function to kill all subprocesses and perform other cleanup tasks."""
-    global _cleanup_called
-    if _cleanup_called:
-        return  # Already cleaned up
-    
-    print("Cleaning up...")
-    _cleanup_called = True
-
-    # Set the stop flag to True
-    global _stop_pipeline
-    _stop_pipeline = True
-
-    # Kill all tracked subprocesses with force termination
-    global _active_subprocesses
-    for process in _active_subprocesses:
-        try:
-            if process.poll() is None:  # Check if the process is still running
-                # First try to terminate gracefully
-                process.terminate()
-                try:
-                    # Wait a short time for graceful termination
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    # If it doesn't terminate gracefully, force kill
-                    process.kill()
-                    print(f"Force killed process: {process.pid}")
-                else:
-                    print(f"Gracefully terminated process: {process.pid}")
-        except Exception as e:
-            print(f"Failed to kill process: {process.pid}: {e}")
-    
-    # Clear the list of active subprocesses
-    _active_subprocesses = []
-
-
-    # Cleanup temporary files and directories
-    try:
-        # Define the directories to clean up
-        temp_dirs = [
-            Path(__file__).parent.parent / "TrueEditor" / "temp_audio",
-            Path(__file__).parent.parent / "TrueEditor" / "temp_preview",
-        ]
-
-        for temp_dir in temp_dirs:
-            if temp_dir.exists():
-                # Delete all files in the directory
-                for file in temp_dir.glob("*"):
-                    try:
-                        file.unlink()
-                    except Exception as e:
-                        print(f"Failed to delete file {file}: {e}")
-
-                # Optionally, delete the directory itself
-                try:
-                    temp_dir.rmdir()
-                except Exception as e:
-                    print(f"Failed to delete directory {temp_dir}: {e}")
-
-        # Cleanup temporary video files in the edited_videos directory
-        edited_videos_dir = Path(__file__).parent.parent / "TrueEditor" / "edited_videos"
-        if edited_videos_dir.exists():
-            for file in edited_videos_dir.glob("*"):
-                if file.is_file() and ("_captioned" in file.name or "_timeline" in file.name):
-                    try:
-                        file.unlink()
-                        print(f"Deleted temporary file: {file}")
-                    except Exception as e:
-                        print(f"Failed to delete temporary file {file}: {e}")
-
-        print("Temporary files and directories cleaned up.")
-    except Exception as e:
-        print(f"Error during file cleanup: {e}")
-
-    # Add any other cleanup tasks here
-    print("Cleanup complete.")
     
 def signal_handler(sig, frame):
     """Handle signals for graceful shutdown."""

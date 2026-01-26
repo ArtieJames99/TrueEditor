@@ -2,65 +2,53 @@
 Copyright (c) 2026 KLJ Enterprises, LLC.
 Licensed under the terms in the LICENSE file in the root of this repository.
 '''
-from cProfile import label
 import subprocess
 from pathlib import Path
 import time
-import os
-import sys
-import main
 import shutil
+import sys
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-project_root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(project_root))
-
+from Core import pipeline_state
 from Audio.audio_utils import normalize_audio
-from Audio import voice_isolation
-from Audio.voice_isolation import (
-    extract_audio,
-    isolate_voice,
-    process_voice_isolation,
-    TEMP_DIR,
-)
-from Captions import captioner
+from Audio.voice_isolation import process_voice_isolation, TEMP_DIR
 from Audio.audioController import process_audio
+from Captions import captioner
 from Core.path_utils import app_base_path
-import numpy as np
-from scipy.io import wavfile
 
-# Global list to keep track of active subprocesses
+# -----------------------------
+# Global setup
+# -----------------------------
+SCRIPT_DIR = app_base_path()
+FFMPEG_EXE = SCRIPT_DIR / "assets" / "ffmpeg" / "ffmpeg.exe"
+FFPROBE_EXE = SCRIPT_DIR / "assets" / "ffmpeg" / "ffprobe.exe"
+
 _active_subprocesses = []
 
+# -----------------------------
+# Logging
+# -----------------------------
+def log_message(level, msg):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] [{level}] {msg}")
+
+# -----------------------------
+# Subprocess helpers
+# -----------------------------
 def create_tracked_subprocess(cmd, name="subprocess", timeout=None):
-    """
-    Create a subprocess that is tracked for cleanup and can be force terminated.
-    Args:
-        cmd: Command list to execute
-        name: Name of the process for logging
-        timeout: Optional timeout for graceful termination
-    Returns:
-        subprocess.Popen object
-    """
-    import main
-    
-    # Check if pipeline should stop before creating process
-    if main._stop_pipeline:
+    if pipeline_state._stop_pipeline:
         log_message("INFO", f"Pipeline stopped, skipping {name}")
         raise KeyboardInterrupt(f"Pipeline stopped before {name}")
-    
+
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
-    
+
     try:
         process = subprocess.Popen(
-            cmd,
-            startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW
         )
         _active_subprocesses.append(process)
         log_message("INFO", f"Started {name} (PID: {process.pid})")
@@ -70,63 +58,41 @@ def create_tracked_subprocess(cmd, name="subprocess", timeout=None):
         raise
 
 def force_terminate_all():
-    """
-    Force terminate all tracked subprocesses immediately.
-    This is called when the stop button is pressed.
-    """
-    import main
-    
-    if main._stop_pipeline:
+    if pipeline_state._stop_pipeline:
         log_message("INFO", "Force terminating all subprocesses...")
-        
-        # Copy the list to avoid modification during iteration
-        processes_to_kill = _active_subprocesses.copy()
-        
-        for process in processes_to_kill:
-            try:
-                if process.poll() is None:  # Check if process is still running
-                    # Force kill immediately without waiting
-                    process.kill()
-                    log_message("INFO", f"Force killed process {process.pid}")
-            except Exception as e:
-                log_message("ERROR", f"Failed to force kill process {process.pid}: {e}")
-        
-        # Clear the list
+        for p in _active_subprocesses.copy():
+            if p.poll() is None:
+                p.kill()
         _active_subprocesses.clear()
 
 def check_stop_condition():
-    """
-    Check if the pipeline should stop and handle disconnection.
-    Call this periodically during long-running operations.
-    """
-    import main
-    
-    if main._stop_pipeline:
-        log_message("INFO", "Pipeline stop requested, disconnecting sources...")
+    if pipeline_state._stop_pipeline:
+        log_message("INFO", "Pipeline stop requested...")
         force_terminate_all()
         raise KeyboardInterrupt("Pipeline stopped by user")
 
-# --------------------------------------------------
-# Setup
-# --------------------------------------------------
-SCRIPT_DIR = app_base_path()
+def wait_for_process_or_stop(process, name="subprocess"):
+    try:
+        while True:
+            retcode = process.poll()
+            if retcode is not None:
+                # Finished
+                stdout, stderr = process.communicate()
+                return stdout, stderr
+            if pipeline_state._stop_pipeline:
+                log_message("INFO", f"Stopping {name}...")
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise KeyboardInterrupt(f"{name} stopped by user")
+            time.sleep(0.1)
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+        raise
 
-FFMPEG_EXE = SCRIPT_DIR / "assets" / "ffmpeg" / "ffmpeg.exe"
-FFPROBE_EXE = SCRIPT_DIR / "assets" / "ffmpeg" / "ffprobe.exe"
-
-# --------------------------------------------------
-# Logging
-# --------------------------------------------------
-
-def log_message(level, msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] [{level}] {msg}")
-
-
-# --------------------------------------------------
-# Main build function
-# --------------------------------------------------
-
+# -----------------------------
+# Build video
+# -----------------------------
 def build_video(
     video_path: Path,
     end_card_path: Optional[Path] = None,
@@ -148,20 +114,11 @@ def build_video(
     ass_path: Optional[Path] = None,
     caption_style: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """
-    Full TrueEdits video build pipeline with proper caption & karaoke handling.
-    """
-    # Check if the pipeline should stop
-    import main
-    if main._stop_pipeline:
-        log_message("INFO", "Pipeline stopped by user.")
-        return
-
     video_path = Path(video_path).resolve()
-    log_message("INFO", f"=== Starting build_video: {video_path.name} ===")
     if not video_path.exists():
         raise FileNotFoundError(video_path)
 
+    log_message("INFO", f"=== Starting build_video: {video_path.name} ===")
     edited_videos_dir = Path(output_folder).resolve()
     edited_videos_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,49 +126,34 @@ def build_video(
     temp_timeline  = edited_videos_dir / f"{video_path.stem}_timeline.mp4"
     final_output   = edited_videos_dir / f"{video_path.stem}_Edited.mp4"
 
-    # --------------------------------------------------
+    # -----------------------------
     # Generate captions
-    # --------------------------------------------------
+    # -----------------------------
     if ass_path:
         ass_path = Path(ass_path)
         if not ass_path.exists():
-            raise FileNotFoundError(f"Provided ASS not found: {ass_path}")
-        log_message("INFO", f"Using provided ASS: {ass_path.name}")
+            raise FileNotFoundError(f"ASS file not found: {ass_path}")
     else:
         ass_path = (SCRIPT_DIR.parent / "TrueEditor" / "transcriptions" / f"{video_path.stem}.ass").resolve()
         if not ass_path.exists() and captions_enabled:
             log_message("INFO", "Generating captions...")
-            # Ensure caption_position is defined
             caption_position = caption_position or {'x': 0.5, 'y': 0.75, 'anchor': 5}
             karaoke_settings = (caption_style or {}).get('karaoke', {})
-
-            # Check if the pipeline should stop before starting caption generation
-            import main
-            if main._stop_pipeline:
-                log_message("INFO", "Pipeline stopped by user.")
-                return
-
-            ass_path = captioner.mp4_to_ass(
-                video_path,
-                model_name=model_name,
-                language=language,
-                position=caption_position,
-                karaoke=karaoke_settings
-            )
-
-            # Wait until ASS is actually created
-            max_wait, elapsed = 30.0, 0.0
-            while not ass_path.exists() and elapsed < max_wait:
+            ass_path = captioner.mp4_to_ass(video_path, model_name=model_name, language=language,
+                                           position=caption_position, karaoke=karaoke_settings)
+            # wait for ASS creation
+            for _ in range(60):
+                if pipeline_state._stop_pipeline:
+                    log_message("INFO", "Pipeline stopped by user during ASS wait")
+                    raise KeyboardInterrupt()
+                if ass_path.exists(): break
                 time.sleep(0.5)
-                elapsed += 0.5
             if not ass_path.exists():
                 raise FileNotFoundError(f"ASS file not created: {ass_path}")
 
-    log_message("INFO", f"Burning captions with file: {ass_path}")
-
-    # --------------------------------------------------
+    # -----------------------------
     # Burn captions
-    # --------------------------------------------------
+    # -----------------------------
     if captions_enabled:
         playresx = playresy = None
         try:
@@ -219,415 +161,139 @@ def build_video(
                 for line in f:
                     if line.startswith("PlayResX:"): playresx = int(line.split(":")[1].strip())
                     if line.startswith("PlayResY:"): playresy = int(line.split(":")[1].strip())
-        except Exception as e:
-            log_message("WARN", f"Failed to read ASS resolution: {e}")
-
-        ass_path_fixed = ass_path.as_posix().replace(":", r"\:")
-        ass_filter = f"subtitles='{ass_path_fixed}'"
+        except Exception:
+            pass
+        escaped_ass_path = ass_path.as_posix().replace(":", r"\:")
+        ass_filter = f"subtitles='{escaped_ass_path}'"
         if playresx and playresy:
             ass_filter += f":original_size={playresx}x{playresy}"
 
         cmd_burn = [
             str(FFMPEG_EXE), "-y", "-i", str(video_path),
-            "-vf", ass_filter,
-            "-map", "0:v", "-map", "0:a?",
-            "-c:v", "libx264", "-c:a", "copy",
-            str(temp_captioned)
+            "-vf", ass_filter, "-map", "0:v", "-map", "0:a?",
+            "-c:v", "libx264", "-c:a", "copy", str(temp_captioned)
         ]
-        log_message("DEBUG", "FFmpeg burn captions CMD: " + " ".join(cmd_burn))
-        
-        # Use tracked subprocess creation
-        process = create_tracked_subprocess(cmd_burn, "ffmpeg_burn_captions")
-        
-        try:
-            # Communicate with timeout to allow for graceful shutdown
-            stdout, stderr = process.communicate(timeout=300)  # 5 minute timeout
-            if process.returncode != 0:
-                log_message("ERROR", f"FFmpeg burn captions failed: {stderr.decode()}")
-                raise subprocess.CalledProcessError(process.returncode, cmd_burn)
-        except subprocess.TimeoutExpired:
-            log_message("ERROR", "FFmpeg burn captions timed out")
-            process.kill()
-            raise
+        process = create_tracked_subprocess(cmd_burn, "burn_captions")
+        stdout, stderr = wait_for_process_or_stop(process, "burn_captions")
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd_burn, stderr)
     else:
-        log_message("INFO", "Captions disabled. Copying video without burn-in.")
         shutil.copy(video_path, temp_captioned)
 
-    # --------------------------------------------------
+    # -----------------------------
     # Append end card if exists
-    # --------------------------------------------------
+    # -----------------------------
     timeline_input = temp_captioned
-    if end_card_path:
-        end_card_path = Path(end_card_path).resolve()
-    if end_card_path and end_card_path.exists():
-        concat_videos(timeline_input, end_card_path, temp_timeline)
+    if end_card_path and Path(end_card_path).exists():
+        concat_videos(timeline_input, Path(end_card_path).resolve(), temp_timeline)
         timeline_input = temp_timeline
     else:
-        temp_timeline.unlink(missing_ok=True)
-        timeline_input.rename(temp_timeline)
+        shutil.copy(timeline_input, temp_timeline)
         timeline_input = temp_timeline
 
-    # --------------------------------------------------
-    # Audio processing (voice isolation, music, normalization)
-    # --------------------------------------------------
-    audio_features_enabled = voice_isolation_enabled or music_path or cleanup_level in ("light", "full")
+    # -----------------------------
+    # Audio processing
+    # -----------------------------
+    audio_features_enabled = voice_isolation_enabled or music_path or cleanup_level in ("light","full")
     temp_isolated = None
     if audio_features_enabled:
-        # Check if the pipeline should stop before starting audio processing
         check_stop_condition()
-
         if voice_isolation_enabled:
             try:
-                isolated_audio_path = process_voice_isolation(timeline_input, TEMP_DIR)
-                if isolated_audio_path and isolated_audio_path.exists():
+                isolated_audio = process_voice_isolation(timeline_input, TEMP_DIR)
+                if isolated_audio.exists():
                     norm_isolated = TEMP_DIR / f"{timeline_input.stem}_isolated_norm.wav"
-                    normalize_audio(isolated_audio_path, norm_isolated)
+                    normalize_audio(isolated_audio, norm_isolated)
                     temp_isolated = edited_videos_dir / f"{video_path.stem}_isolated.mp4"
-                    process_audio(
-                        video_in=timeline_input,
-                        video_out=temp_isolated,
-                        music_path=None,
-                        music_volume=music_volume,
-                        cleanup_level=cleanup_level,
-                        platform=platform,
-                        isolated_audio=norm_isolated,
-                        normalize=True,
-                        target_lufs=target_lufs
-                    )
+                    process_audio(video_in=timeline_input, video_out=temp_isolated,
+                                  music_path=None, music_volume=music_volume,
+                                  cleanup_level=cleanup_level, platform=platform,
+                                  isolated_audio=norm_isolated, normalize=True, target_lufs=target_lufs)
                     timeline_input = temp_isolated
             except KeyboardInterrupt:
                 log_message("INFO", "Voice isolation stopped by user")
                 return
 
         if music_path:
-            # Check if the pipeline should stop before final audio processing
             check_stop_condition()
-
-            try:
-                process_audio(
-                    video_in=timeline_input,
-                    video_out=final_output,
-                    music_path=music_path,
-                    music_volume=music_volume,
-                    cleanup_level="off",
-                    platform=platform,
-                    isolated_audio=None,
-                    normalize=True,
-                    target_lufs=target_lufs
-                )
-            except KeyboardInterrupt:
-                log_message("INFO", "Audio processing stopped by user")
-                return
+            process_audio(video_in=timeline_input, video_out=final_output,
+                          music_path=music_path, music_volume=music_volume,
+                          cleanup_level="off", platform=platform,
+                          isolated_audio=None, normalize=True, target_lufs=target_lufs)
         else:
             shutil.copy(timeline_input, final_output)
     else:
         shutil.copy(timeline_input, final_output)
 
-    # --------------------------------------------------
-    # Watermark (optional)
-    # --------------------------------------------------
-    #if watermark_path and watermark_path.exists():
-    #    watermark_position = watermark_position or {'x': 0.95, 'y': 0.95}
-    #    add_watermark(timeline_input, watermark_path, final_output, position=watermark_position,
-    #                  opacity=watermark_opacity, width_percent=watermark_size)
-
-    # --------------------------------------------------
+    # -----------------------------
     # Cleanup
-    # --------------------------------------------------
+    # -----------------------------
     for f in [temp_captioned, temp_timeline, temp_isolated]:
         if f and f.exists(): f.unlink(missing_ok=True)
 
     log_message("INFO", f"=== Build complete: {final_output} ===")
 
-# --------------------------------------------------
-# End card concat function
-# --------------------------------------------------
-
+# -----------------------------
+# Video + End card concatenation
+# -----------------------------
 def concat_videos(timeline_path: Path, end_card_path: Path, output_path: Path):
-    """
-    Concatenates a timeline video with an end card, making the end card
-    match the timeline's codec, resolution, frame rate, pixel format, and audio.
-    """
+    timeline_path, end_card_path, output_path = map(Path.resolve, [timeline_path, end_card_path, output_path])
+    if not timeline_path.exists() or not end_card_path.exists():
+        raise FileNotFoundError("Timeline or end card missing")
 
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
+    # Probe timeline
+    cmd_probe_video = [str(FFPROBE_EXE), "-v", "error", "-select_streams", "v:0",
+                       "-show_entries", "stream=width,height,pix_fmt,r_frame_rate,codec_name",
+                       "-of", "default=noprint_wrappers=1", str(timeline_path)]
+    proc = create_tracked_subprocess(cmd_probe_video, "probe_video")
+    stdout, _ = proc.communicate()
+    info = dict(line.strip().split("=",1) for line in stdout.decode().splitlines() if "=" in line)
+    w, h = int(info["width"]), int(info["height"])
+    pix_fmt = info["pix_fmt"]
+    vcodec = info["codec_name"]
+    fps_str = info["r_frame_rate"]
+    fps = float(fps_str.split("/")[0])/float(fps_str.split("/")[1]) if "/" in fps_str else float(fps_str)
 
-    # 1️⃣ Probe timeline video
-    cmd_probe_video = [
-        str(FFPROBE_EXE),
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,pix_fmt,r_frame_rate,codec_name",
-        "-of", "default=noprint_wrappers=1",
-        str(timeline_path)
-    ]
-    process = create_tracked_subprocess(cmd_probe_video, "probe_video")
-    result = process.communicate()
-    if process.returncode != 0:
-        log_message("ERROR", f"Failed to probe video: {result.stderr}")
-        raise ValueError(f"Failed to probe video: {result.stderr}")
-
-    out = result.stdout.strip().splitlines()
-
-    # Parse the output by matching keys and values
-    timeline_w = None
-    timeline_h = None
-    timeline_pix_fmt = None
-    timeline_fps_str = None
-    timeline_vcodec = None
-
-    for line in out:
-        if line.startswith("width="):
-            timeline_w = int(line.split("=")[1])
-        elif line.startswith("height="):
-            timeline_h = int(line.split("=")[1])
-        elif line.startswith("pix_fmt="):
-            timeline_pix_fmt = line.split("=")[1]
-        elif line.startswith("r_frame_rate="):
-            timeline_fps_str = line.split("=")[1]
-        elif line.startswith("codec_name="):
-            timeline_vcodec = line.split("=")[1]
-
-    if timeline_w is None or timeline_h is None or timeline_pix_fmt is None or timeline_fps_str is None or timeline_vcodec is None:
-        log_message("ERROR", f"Failed to parse video stream information. Output: {out}")
-        raise ValueError("Failed to parse video stream information from ffprobe output")
-
-    # Convert r_frame_rate fraction to float
-    if '/' in timeline_fps_str:
-        num, den = timeline_fps_str.split('/')
-        timeline_fps = float(num) / float(den)
+    # Probe audio
+    cmd_probe_audio = [str(FFPROBE_EXE), "-v", "error", "-select_streams", "a:0",
+                       "-show_entries", "stream=codec_name,channels,sample_rate",
+                       "-of", "default=noprint_wrappers=1", str(timeline_path)]
+    proc = create_tracked_subprocess(cmd_probe_audio, "probe_audio")
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        acodec, channels, ar = "aac", 2, 48000
     else:
-        timeline_fps = float(timeline_fps_str)
+        audio_info = dict(line.strip().split("=",1) for line in stdout.decode().splitlines() if "=" in line)
+        acodec = audio_info.get("codec_name","aac")
+        channels = int(audio_info.get("channels","2"))
+        ar = int(audio_info.get("sample_rate","48000"))
 
-    # 2️⃣ Probe timeline audio
-    cmd_probe_audio = [
-        str(FFPROBE_EXE),
-        "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=codec_name,channels,sample_rate",
-        "-of", "default=noprint_wrappers=1",
-        str(timeline_path)
-    ]
-    try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0
-        process = create_tracked_subprocess(cmd_probe_audio, "probe_audio")
-        result_audio = process.communicate()
-        if result_audio.returncode != 0:
-            log_message("WARN", f"No audio stream found or failed to probe audio: {result_audio.stderr}")
-            timeline_acodec = "aac"
-            timeline_channels = "2"
-            timeline_ar = "48000"
-        else:
-            out_audio = result_audio.stdout.strip().splitlines()
-            timeline_acodec = out_audio[0].split("=")[1] if out_audio and out_audio[0].startswith("codec_name=") else "aac"
-            timeline_channels = out_audio[1].split("=")[1] if len(out_audio) > 1 and out_audio[1].startswith("channels=") else "2"
-            timeline_ar = out_audio[2].split("=")[1] if len(out_audio) > 2 and out_audio[2].startswith("sample_rate=") else "48000"
-    except Exception as e:
-        log_message("WARN", f"Error probing audio: {e}")
-        timeline_acodec = "aac"
-        timeline_channels = "2"
-        timeline_ar = "48000"
-
-    # 3️⃣ Prepare end card with audio if missing
-    end_card_audio_path = end_card_path.parent / "endcard_with_audio.mp4"
-    cmd_add_audio = [
-        str(FFMPEG_EXE), "-y",
-        "-i", str(end_card_path),
-        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-shortest",
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        str(end_card_audio_path),
-    ]
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    process = create_tracked_subprocess(cmd_add_audio, "add_audio")
+    # Ensure end card has audio
+    temp_end_audio = end_card_path.parent / "endcard_with_audio.mp4"
+    cmd_add_audio = [str(FFMPEG_EXE), "-y", "-i", str(end_card_path),
+                     "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                     "-shortest", "-c:v", "libx264", "-c:a", "aac", str(temp_end_audio)]
+    process = create_tracked_subprocess(cmd_add_audio, "add_audio_endcard")
     process.communicate()
 
-    # 4️⃣ Scale & match codec to timeline
-    scaled_endcard = end_card_path.parent / "endcard_scaled.mp4"
-    cmd_scale = [
-        str(FFMPEG_EXE), "-y",
-        "-i", str(end_card_audio_path),
-        "-vf", f"scale={timeline_w}:{timeline_h},format={timeline_pix_fmt}",
-        "-r", str(int(timeline_fps)),  # convert float fps to int for FFmpeg
-        "-c:v", timeline_vcodec,
-        "-c:a", timeline_acodec,
-        "-ar", str(timeline_ar),
-        "-ac", str(timeline_channels),
-        str(scaled_endcard)
-    ]
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    process = create_tracked_subprocess(cmd_scale, "scale_video")
+    # Scale end card
+    temp_scaled = end_card_path.parent / "endcard_scaled.mp4"
+    cmd_scale = [str(FFMPEG_EXE), "-y", "-i", str(temp_end_audio),
+                 "-vf", f"scale={w}:{h},format={pix_fmt}", "-r", str(int(fps)),
+                 "-c:v", vcodec, "-c:a", acodec, "-ar", str(ar), "-ac", str(channels),
+                 str(temp_scaled)]
+    process = create_tracked_subprocess(cmd_scale, "scale_endcard")
     process.communicate()
 
-    # 5️⃣ Concat timeline + scaled end card
-    cmd_concat = [
-        str(FFMPEG_EXE), "-y",
-        "-i", str(timeline_path),
-        "-i", str(scaled_endcard),
-        "-filter_complex",
-        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-        "-map", "[v]",
-        "-map", "[a]",
-        "-movflags", "+faststart",
-        str(output_path),
-    ]
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
+    # Concat
+    cmd_concat = [str(FFMPEG_EXE), "-y", "-i", str(timeline_path), "-i", str(temp_scaled),
+                  "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+                  "-map", "[v]", "-map", "[a]", "-movflags", "+faststart", str(output_path)]
     process = create_tracked_subprocess(cmd_concat, "concat_videos")
     process.communicate()
 
-    # 6️⃣ Cleanup temp files
-    end_card_audio_path.unlink(missing_ok=True)
-    scaled_endcard.unlink(missing_ok=True)
+    # Cleanup
+    temp_end_audio.unlink(missing_ok=True)
+    temp_scaled.unlink(missing_ok=True)
 
-    log_message("INFO", f"Saved timeline video: {output_path}")
-    """
-    Concatenates a timeline video with an end card, making the end card
-    match the timeline's codec, resolution, frame rate, pixel format, and audio.
-    """
-
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-
-    # 1️⃣ Probe timeline video
-    cmd_probe_video = [
-        str(FFPROBE_EXE),
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,pix_fmt,r_frame_rate,codec_name",
-        "-of", "default=noprint_wrappers=1",
-        str(timeline_path)
-    ]
-    result = create_tracked_subprocess(cmd_probe_video, "probe_video_timeline")
-    if result.returncode != 0:
-        log_message("ERROR", f"Failed to probe video: {result.stderr}")
-        raise ValueError(f"Failed to probe video: {result.stderr}")
-
-    out = result.stdout.strip().splitlines()
-
-    # Parse the output by matching keys and values
-    timeline_w = None
-    timeline_h = None
-    timeline_pix_fmt = None
-    timeline_fps_str = None
-    timeline_vcodec = None
-
-    for line in out:
-        if line.startswith("width="):
-            timeline_w = int(line.split("=")[1])
-        elif line.startswith("height="):
-            timeline_h = int(line.split("=")[1])
-        elif line.startswith("pix_fmt="):
-            timeline_pix_fmt = line.split("=")[1]
-        elif line.startswith("r_frame_rate="):
-            timeline_fps_str = line.split("=")[1]
-        elif line.startswith("codec_name="):
-            timeline_vcodec = line.split("=")[1]
-
-    if timeline_w is None or timeline_h is None or timeline_pix_fmt is None or timeline_fps_str is None or timeline_vcodec is None:
-        log_message("ERROR", f"Failed to parse video stream information. Output: {out}")
-        raise ValueError("Failed to parse video stream information from ffprobe output")
-
-    # Convert r_frame_rate fraction to float
-    if '/' in timeline_fps_str:
-        num, den = timeline_fps_str.split('/')
-        timeline_fps = float(num) / float(den)
-    else:
-        timeline_fps = float(timeline_fps_str)
-
-    # 2️⃣ Probe timeline audio
-    cmd_probe_audio = [
-        str(FFPROBE_EXE),
-        "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=codec_name,channels,sample_rate",
-        "-of", "default=noprint_wrappers=1",
-        str(timeline_path)
-    ]
-    try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0
-        result_audio = create_tracked_subprocess(cmd_probe_audio, "probe_audio_timeline")
-        if result_audio.returncode != 0:
-            log_message("WARN", f"No audio stream found or failed to probe audio: {result_audio.stderr}")
-            timeline_acodec = "aac"
-            timeline_channels = "2"
-            timeline_ar = "48000"
-        else:
-            out_audio = result_audio.stdout.strip().splitlines()
-            timeline_acodec = out_audio[0].split("=")[1] if out_audio and out_audio[0].startswith("codec_name=") else "aac"
-            timeline_channels = out_audio[1].split("=")[1] if len(out_audio) > 1 and out_audio[1].startswith("channels=") else "2"
-            timeline_ar = out_audio[2].split("=")[1] if len(out_audio) > 2 and out_audio[2].startswith("sample_rate=") else "48000"
-    except Exception as e:
-        log_message("WARN", f"Error probing audio: {e}")
-        timeline_acodec = "aac"
-        timeline_channels = "2"
-        timeline_ar = "48000"
-
-    # 3️⃣ Prepare end card with audio if missing
-    end_card_audio_path = end_card_path.parent / "endcard_with_audio.mp4"
-    cmd_add_audio = [
-        str(FFMPEG_EXE), "-y",
-        "-i", str(end_card_path),
-        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-shortest",
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        str(end_card_audio_path),
-    ]
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    subprocess.Popen(cmd_add_audio, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
-
-    # 4️⃣ Scale & match codec to timeline
-    scaled_endcard = end_card_path.parent / "endcard_scaled.mp4"
-    cmd_scale = [
-        str(FFMPEG_EXE), "-y",
-        "-i", str(end_card_audio_path),
-        "-vf", f"scale={timeline_w}:{timeline_h},format={timeline_pix_fmt}",
-        "-r", str(int(timeline_fps)),  # convert float fps to int for FFmpeg
-        "-c:v", timeline_vcodec,
-        "-c:a", timeline_acodec,
-        "-ar", str(timeline_ar),
-        "-ac", str(timeline_channels),
-        str(scaled_endcard)
-    ]
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    create_tracked_subprocess(cmd_scale, "scale_video_timeline")
-
-    # 5️⃣ Concat timeline + scaled end card
-    cmd_concat = [
-        str(FFMPEG_EXE), "-y",
-        "-i", str(timeline_path),
-        "-i", str(scaled_endcard),
-        "-filter_complex",
-        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-        "-map", "[v]",
-        "-map", "[a]",
-        "-movflags", "+faststart",
-        str(output_path),
-    ]
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    create_tracked_subprocess(cmd_concat, "concat_videos_timeline")
-
-    # 6️⃣ Cleanup temp files
-    end_card_audio_path.unlink(missing_ok=True)
-    scaled_endcard.unlink(missing_ok=True)
-
-    log_message("INFO", f"Saved timeline video: {output_path}")
+    log_message("INFO", f"Saved concatenated video: {output_path}")
