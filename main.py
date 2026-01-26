@@ -9,6 +9,9 @@ import signal
 import argparse
 import warnings
 import subprocess
+import platform
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon
 from ui.TrueEditor_UI import main as ui_main
 from multiprocessing import freeze_support
 from Core.logging_utils import setup_logging
@@ -169,6 +172,14 @@ def process_folder(folder_path, args):
 
     print("\n=== Batch processing complete ===")
 
+def get_icon_path():
+    '''Enables Icon view per system'''
+    if platform.system() == 'Windows':
+        return 'assets\Icons\TrueEditor.ico'
+    elif platform.system() == 'Darwin':
+        return 'assets\Icons\TrueEditor.icns'
+    else:
+        return 'assets\Icons\TrueEditor.png' #Fallback for Linux
 
 
 def main():
