@@ -37,17 +37,22 @@ def get_df_model():
 # --------------------------------------------------
 # Helper: run FFmpeg
 # --------------------------------------------------
+_active_subprocesses = []
+
 def run_ffmpeg(cmd):
     cmd = [str(c) for c in cmd]
     print(f"[DEBUG] Running FFmpeg: {' '.join(cmd)}")
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
-    if result.returncode != 0:
+    startupinfo.wShowWindow = 0
+    process = subprocess.Popen(cmd, capture_output=True, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    _active_subprocesses.append(process)
+    result = process.communicate()
+    if process.returncode != 0:
         print("[ERROR] FFmpeg failed:")
         print(result.stderr)
-        raise RuntimeError(f"FFmpeg failed with code {result.returncode}")
+        raise RuntimeError(f"FFmpeg failed with code {process.returncode}")
+    return result
 
 # --------------------------------------------------
 # Extract audio
@@ -89,8 +94,8 @@ def conform_isolated_to_video(
     ref_wav = out_wav.parent / f"{reference_video.stem}_ref.wav"
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    subprocess.run([
+    startupinfo.wShowWindow = 0
+    subprocess.Popen([
         str(ffmpeg_exe), "-y",
         "-i", str(reference_video),
         "-vn",
@@ -104,8 +109,8 @@ def conform_isolated_to_video(
     iso_resamp = out_wav.parent / f"{out_wav.stem}_resamp.wav"
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    subprocess.run([
+    startupinfo.wShowWindow = 0
+    subprocess.Popen([
         str(ffmpeg_exe), "-y",
         "-i", str(isolated_wav),
         "-ac", str(target_channels),

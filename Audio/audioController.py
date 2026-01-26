@@ -14,6 +14,9 @@ FFPROBE_EXE = SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffprobe.exe"
 if FFMPEG_EXE.exists():
     os.environ["PATH"] = str(FFMPEG_EXE.parent) + os.pathsep + os.environ.get("PATH", "")
 
+# Global list to keep track of active subprocesses
+_active_subprocesses = []
+
 LOUDNESS_TARGETS = {
     "instagram": {"i": -14, "tp": -1.0, "lra": 11},
     "facebook":  {"i": -14, "tp": -1.0, "lra": 11},
@@ -23,6 +26,9 @@ LOUDNESS_TARGETS = {
     "generic":  {"i": -14, "tp": -1.0, "lra": 11},
     "custom": {"i": -14, "tp": -1.0, "lra": 11},  # Will be overridden by UI
 }
+
+# Global list to keep track of active subprocesses
+_active_subprocesses = []
 
 # --------------------------------------------------
 # Helpers
@@ -40,7 +46,7 @@ def get_audio_delay(video_path):
     ]
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
+    startupinfo.wShowWindow = 0
     result = subprocess.check_output(cmd, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW).strip()
     try:
         return float(result)
@@ -215,6 +221,8 @@ def process_audio(
     log_message("DEBUG", " ".join(cmd))
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
+    startupinfo.wShowWindow = 0
 
-    subprocess.run(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    process = subprocess.Popen(cmd, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    _active_subprocesses.append(process)
+    process.communicate()

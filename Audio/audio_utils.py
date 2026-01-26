@@ -11,7 +11,14 @@ SCRIPT_DIR = Path(__file__).parent
 FFMPEG_EXE = (SCRIPT_DIR.parent / "assets" / "ffmpeg" / "ffmpeg.exe").resolve()
 
 def run_ffmpeg(cmd):
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    process = subprocess.Popen(cmd, capture_output=True, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    result = process.communicate()
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd, result[1])
+    return result
 
 def normalize_audio(
     input_wav: Path,

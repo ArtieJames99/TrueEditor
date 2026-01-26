@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     QObject, Signal, Slot, QRunnable, QThreadPool, QSettings
 )
 from PySide6.QtGui import (
-    QPainter, QBrush, QColor, QPixmap, QPen, QFont, QAction, QDesktopServices, QGuiApplication, QCursor
+    QPainter, QBrush, QColor, QPixmap, QPen, QFont, QAction, QDesktopServices, QGuiApplication, QCursor, QIcon
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
@@ -24,8 +24,7 @@ from PySide6.QtWidgets import (
     QListWidget, QGroupBox,
     QSpinBox, QSlider, QFrame, QRadioButton, QFileDialog,
     QStatusBar, QMessageBox, QProgressBar, QSizePolicy, QSpacerItem, QListWidgetItem, QStyle, QSplitter, QScrollArea,
-    QTextEdit, QInputDialog
-, QMenu)
+    QTextEdit, QInputDialog, QMenu)
 
 
 # --- Video utilities (FFmpeg-based) ---
@@ -33,6 +32,8 @@ import subprocess
 import tempfile
 import os
 from PySide6.QtGui import QPixmap
+
+_active_subprocesses = []
 
 def _get_ffmpeg_exes():
     base = Path(__file__).parent.parent / "assets" / "ffmpeg"
@@ -49,14 +50,13 @@ def get_video_resolution(path: str) -> tuple[int, int]:
     # Always hide the console window
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    
-    result = subprocess.run(
+    startupinfo.wShowWindow = 0  # SW_HIDE
+    result = subprocess.Popen(
         cmd,
         capture_output=True,
         text=True,
+        startupinfo=startupinfo,
         creationflags=subprocess.CREATE_NO_WINDOW,
-        startupinfo=startupinfo
     )
     out = result.stdout.strip()
     w, h = out.split(",")
@@ -72,31 +72,27 @@ def grab_first_frame(path: str) -> QPixmap:
         # Always hide the console window
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        
-        result = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            startupinfo=startupinfo
-        )
-        
+        startupinfo.wShowWindow = 0  # SW_HIDE
+
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+        _active_subprocesses.append(process)
+        stdout, stderr = process.communicate()
+
+        if process.returncode != 0:
+            print(f"[WARN] ffmpeg failed to extract frame: {stderr}")
+            return QPixmap()
+
         pix = QPixmap(str(tmp)) if tmp.exists() else QPixmap()
-    except subprocess.CalledProcessError as e:
-        print(f"[WARN] ffmpeg failed to extract frame: {e.stderr}")
-        pix = QPixmap()
     except Exception as e:
         print(f"[WARN] ffmpeg failed to extract frame: {e}")
         pix = QPixmap()
     finally:
         try:
-            if tmp.exists():
-                tmp.unlink()
+            tmp.unlink(missing_ok=True)
         except Exception:
             pass
     return pix
+
 def _app_base_dir() -> Path:
     """
     Returns a stable base directory for resources.
@@ -195,10 +191,10 @@ class CaptionPreview(QFrame):
         super().__init__(parent)
         self.setMinimumSize(QSize(400, 300))
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        base_dir = Path(__file__).parent
+        base_dir = Path(__file__).parent.parent
         self.video_path = Path(video_path) if video_path else base_dir / "preview" / "Example.jpg"
         self.bg_pixmap = QPixmap(str(self.video_path)) if self.video_path.exists() else QPixmap()
-        self.safe_zone_path = Path(safe_zone_path) if safe_zone_path else base_dir / "preview"/ "safe_zone.png"
+        self.safe_zone_path = Path(safe_zone_path) if safe_zone_path else base_dir / "assets" / "images" / "safe_zone.png"
         self.safezone_pixmap = QPixmap(str(self.safe_zone_path)) if self.safe_zone_path.exists() else QPixmap()
         self.show_safezone = False
 
@@ -669,9 +665,9 @@ class DropListWidget(QListWidget):
 # Generic worker using QRunnable + signals
 # -------------------------------
 class WorkerSignals(QObject):
-    progress = Signal(int)          # 0..100
+    progress = Signal(int) 
     log = Signal(str)
-    result = Signal(object)         # any
+    result = Signal(object)
     error = Signal(str)
     finished = Signal()
 
@@ -713,7 +709,18 @@ class TrueEditor(QMainWindow):
         super().__init__()
         self.setWindowTitle('TrueEditor')
         self.resize(1024, 768)
-    
+
+        assets_path = Path(__file__).parent.parent / "assets" / "icons"
+
+        if sys.platform.startswith("darwin"):  # macOS
+            icon_file = assets_path / "TrueEditor.png"
+        elif sys.platform.startswith("win"):  # Windows
+            icon_file = assets_path / "TrueEditor.ico"
+        else:  # Linux / others
+            icon_file = assets_path / "TrueEditor.png"  # or 128x128 from folder
+
+        self.setWindowIcon(QIcon(str(icon_file)))
+            
         # Settings & thread pool
         self.settings = QSettings('TrueEditor', 'TrueEditor')
         self.pool = QThreadPool.globalInstance()
@@ -3180,6 +3187,7 @@ class TrueEditor(QMainWindow):
         self.run_batch_btn = QPushButton('Edit Batch')
         self.btn_stop = QPushButton('Stop')
         self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._stop_pipeline)
         user_row = QHBoxLayout()
         self.run_clear_transcriptions_btn = QPushButton('Clear Transcriptions')
         self.run_clear_transcriptions_btn.clicked.connect(self._clear_transcriptions)
@@ -3734,8 +3742,10 @@ class TrueEditor(QMainWindow):
             except Exception as e:
                 print(f"[UI LOG FAIL] {formatted_message} ({e})")
         else:
-            # EXE / early-start fallback
-            print(formatted_message)
+            # EXE / early-start fallback --> route to app logger
+            import logging
+            logging.getLogger("trueeditor.ui").info(formatted_message)
+
 
         # Progress parsing (also guarded)
         if 'Task Progress:' in message and hasattr(self, 'progress_task'):
@@ -3916,12 +3926,19 @@ class TrueEditor(QMainWindow):
                 item.setText(f"⏳ Queued: {file_name}")
 
     def _stop_pipeline(self):
-        """Stop the current pipeline execution."""
-        # This would need to be implemented in the backend
-        # For now, just update UI state
+        """Stop the current pipeline execution and force shutdown of all subprocesses."""
+        # Call the cleanup function to kill all subprocesses
+        from main import cleanup
+        cleanup()
+        
+        # Update UI state
         self.status.showMessage('Pipeline stopped by user')
         self.btn_stop.setEnabled(False)
-        self.run_log.addItem("🛑 Pipeline stopped by user")
+        self.run_log.addItem("🛑 Pipeline stopped by user - Force shutdown initiated")
+        
+        # Also stop any running workers in the thread pool
+        self.pool.clear()
+        self.pool.waitForDone(1000)  # Wait up to 1 second for workers to finish
 
     def _clear_log(self):
         """Clear the processing log."""
@@ -4503,6 +4520,26 @@ class TrueEditor(QMainWindow):
         )
         self.edit_preview_view.setPixmap(scaled)
         self.edit_preview_view.setText("")
+
+    def _stop_pipeline(self):
+        """Stop the pipeline and perform cleanup with force shutdown."""
+        print("Stopping pipeline...")
+        # Call the cleanup function to kill all subprocesses
+        from main import cleanup
+        cleanup()
+        
+        # Additional logic to stop the pipeline
+        self._pipeline_running = False
+        self.progress.setValue(0)
+        
+        # Stop any running workers in the thread pool
+        self.pool.clear()
+        self.pool.waitForDone(1000)  # Wait up to 1 second for workers to finish
+        
+        # Update UI to reflect force shutdown
+        self.status.showMessage('Pipeline force stopped')
+        self.run_log.addItem("🛑 Pipeline force stopped - All subprocesses terminated")
+        self.status.showMessage("Pipeline stopped.")
 
 def main():
     app = QApplication(sys.argv)

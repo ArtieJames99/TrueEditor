@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 import sys
 from pathlib import Path
+import logging
 
 # Add the project root to sys.path to allow absolute imports
 project_root = Path(__file__).resolve().parent.parent
@@ -107,21 +108,30 @@ def pipeline_runner(
     audio_settings: Dict[str, Any],
     branding: Dict[str, Any],
     test: bool = False,
-    base_color_hex="#FFFFFF", 
+    base_color_hex="#FFFFFF",
     karaoke_color_hex="#FF0000",
-    report: Optional[Callable[[int, str], None]] = None,  
+    report: Optional[Callable[[int, str], None]] = None,
+    stop_pipeline: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Main pipeline orchestrator: processes video batch with progress reporting.
-    Ensures caption positions and karaoke tags are consistently applied.
-    """
-    
-    def emit(percent: int, message: str):
+    """Main pipeline orchestrator: processes video batch with progress reporting.
+    Ensures caption positions and karaoke tags are consistently applied."""
+
+    def emit(percent: int | None, message: str | None):
         if report:
             try:
                 report(percent, message)
+                return
             except Exception as e:
-                print(f"[WARN] Report callback failed: {e}")
+                logging.getLogger("trueeditor.pipeline").warning(f"Report callback failed: {e}")
+        # last resort (do not print in GUI exe)
+        if message:
+            logging.getLogger("trueeditor.pipeline").info(message)
+
+    # Check if the pipeline should stop
+    if stop_pipeline:
+        emit(0, "Pipeline stopped by user.")
+        return {'success': False, 'processed': 0, 'failed': 0, 'errors': ["Pipeline stopped by user."]}
+
 
     output_folder = Path(output_folder).resolve()
     if not output_folder.exists():

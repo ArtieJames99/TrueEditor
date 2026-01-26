@@ -7,6 +7,10 @@ Licensed under the terms in the LICENSE file in the root of this repository.
 from pathlib import Path
 import subprocess
 
+
+# Global list to keep track of active subprocesses
+_active_subprocesses = []
+
 def apply_audio(
     video_in: Path,
     video_out: Path,
@@ -31,7 +35,10 @@ def apply_audio(
             "-c", "copy",
             str(video_out)
         ]
-        subprocess.run(cmd, check=True)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        subprocess.Popen(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
         return
 
     # === Base audio filter ===
@@ -67,4 +74,4 @@ def apply_audio(
         str(video_out)
     ]
 
-    subprocess.run(cmd, check=True)
+    subprocess.Popen(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)

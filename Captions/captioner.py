@@ -12,6 +12,9 @@ from datetime import datetime
 from .ass_style import AssStyle
 import json
 
+# Global list to keep track of active subprocesses
+_active_subprocesses = []
+
 # === Configuration ===
 
 # Use bundled FFmpeg from assets folder
@@ -236,8 +239,11 @@ def get_video_resolution(video_path):
 
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    data = json.loads(subprocess.check_output(cmd, text=True,  startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW))
+    startupinfo.wShowWindow = 0
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    _active_subprocesses.append(process)
+    stdout, stderr = process.communicate()
+    data = json.loads(stdout)
     stream = data["streams"][0]
 
     width = int(stream["width"])
@@ -663,11 +669,13 @@ def main(video_path, language=None):
     # Merge captions into en.mov (CLI convenience)
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
+    startupinfo.wShowWindow = 0
     out_mov = video_path.parent / "en.mov"
     ass_path_ffmpeg = ass_path.replace("\\", "/")
     cmd = [FFMPEG_EXE, "-i", str(video_path), "-vf", f"ass='{ass_path_ffmpeg}'", str(out_mov)]
-    subprocess.run(cmd, check=True, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    process = subprocess.Popen(cmd, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+    _active_subprocesses.append(process)
+    process.communicate()
     print(f"Video with captions saved to: {out_mov}")
 
 if __name__ == "__main__":
